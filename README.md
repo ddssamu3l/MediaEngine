@@ -175,7 +175,7 @@ go install github.com/youruser/videotogif@latest
 
 ## Cross-Platform Builds
 
-Build for different platforms:
+Build for different platforms with full cross-platform path validation:
 
 ```bash
 # Windows 64-bit
@@ -193,6 +193,25 @@ GOOS=linux GOARCH=amd64 go build -o videotogif-linux .
 # Linux ARM64 (Raspberry Pi)
 GOOS=linux GOARCH=arm64 go build -o videotogif-linux-arm64 .
 ```
+
+### Platform-Specific Features
+
+**Path Validation:**
+- **Windows**: Validates against reserved names (CON, PRN, AUX, etc.) and invalid characters (`< > : " | ? *`)
+- **macOS**: Protects system directories (`/System`, `/Applications`, etc.)
+- **Linux**: Protects system directories (`/etc`, `/usr`, `/bin`, etc.)
+
+**Path Length Limits:**
+- **Windows**: 260 characters (classic MAX_PATH)
+- **macOS**: 1024 characters
+- **Linux**: 4096 characters (PATH_MAX)
+
+**Case Sensitivity:**
+- **Windows**: Case-insensitive path comparison
+- **macOS/Linux**: Case-sensitive path comparison
+
+**Directory Separators:**
+- Automatically handled by Go's `filepath` package across all platforms
 
 ## Usage
 

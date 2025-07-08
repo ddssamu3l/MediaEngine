@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 )
 
@@ -13,27 +14,114 @@ const (
 	MaxFileSizeBytes = 500 * 1024 * 1024
 )
 
+// getSystemDirectories returns platform-specific system directories to protect
+func getSystemDirectories() []string {
+	switch runtime.GOOS {
+	case "windows":
+		return []string{
+			"C:\\Windows",
+			"C:\\Program Files",
+			"C:\\Program Files (x86)",
+			"C:\\System Volume Information",
+			"C:\\ProgramData",
+		}
+	case "darwin": // macOS
+		return []string{
+			"/System",
+			"/usr",
+			"/bin",
+			"/sbin",
+			"/etc",
+			"/private",
+			"/Applications",
+		}
+	case "linux":
+		return []string{
+			"/etc",
+			"/usr",
+			"/bin",
+			"/sbin",
+			"/boot",
+			"/sys",
+			"/proc",
+			"/root",
+		}
+	default:
+		// Generic Unix-like fallback
+		return []string{
+			"/etc",
+			"/usr",
+			"/bin",
+			"/sbin",
+		}
+	}
+}
+
+// getMaxPathLength returns platform-specific maximum path length
+func getMaxPathLength() int {
+	switch runtime.GOOS {
+	case "windows":
+		return 260 // Windows MAX_PATH (can be 32767 with long path support, but 260 is safer)
+	case "darwin":
+		return 1024 // macOS typical limit
+	case "linux":
+		return 4096 // Linux PATH_MAX
+	default:
+		return 1024 // Conservative default
+	}
+}
+
+// normalizePathForComparison normalizes paths for cross-platform comparison
+func normalizePathForComparison(path string) string {
+	// Convert to lowercase on Windows for case-insensitive comparison
+	if runtime.GOOS == "windows" {
+		return strings.ToLower(filepath.Clean(path))
+	}
+	return filepath.Clean(path)
+}
+
 // ValidateInputPath performs comprehensive validation of input video file paths
 func ValidateInputPath(input string) error {
 	if strings.TrimSpace(input) == "" {
 		return fmt.Errorf("path cannot be empty")
 	}
 
-	path := strings.TrimSpace(input)
+	// Clean the input: trim whitespace and remove surrounding quotes
+	cleanedPath := strings.TrimSpace(input)
+
+	// Remove surrounding quotes (single or double) that Finder might add
+	if len(cleanedPath) >= 2 {
+		if (cleanedPath[0] == '\'' && cleanedPath[len(cleanedPath)-1] == '\'') ||
+			(cleanedPath[0] == '"' && cleanedPath[len(cleanedPath)-1] == '"') {
+			cleanedPath = cleanedPath[1 : len(cleanedPath)-1]
+		}
+	}
+
+	// Trim again after removing quotes
+	cleanedPath = strings.TrimSpace(cleanedPath)
+
+	if cleanedPath == "" {
+		return fmt.Errorf("path cannot be empty after removing quotes")
+	}
 
 	// Security: Check for directory traversal attempts
-	if strings.Contains(path, "..") {
+	if strings.Contains(cleanedPath, "..") {
 		return fmt.Errorf("path cannot contain '..' (directory traversal)")
 	}
 
 	// Convert to absolute path for consistent handling
-	absPath, err := filepath.Abs(path)
+	absPath, err := filepath.Abs(cleanedPath)
 	if err != nil {
 		return fmt.Errorf("invalid path format: %v", err)
 	}
 
 	// Clean the path to remove any redundant elements
 	cleanPath := filepath.Clean(absPath)
+
+	// Check for invalid characters (platform-specific)
+	if err := validatePathCharacters(cleanPath); err != nil {
+		return err
+	}
 
 	// Check if file exists
 	fileInfo, err := os.Stat(cleanPath)
@@ -81,15 +169,31 @@ func ValidateOutputPathBasic(input string) error {
 		return fmt.Errorf("output path cannot be empty")
 	}
 
-	path := strings.TrimSpace(input)
+	// Clean the input: trim whitespace and remove surrounding quotes
+	cleanedPath := strings.TrimSpace(input)
+
+	// Remove surrounding quotes (single or double) that Finder might add
+	if len(cleanedPath) >= 2 {
+		if (cleanedPath[0] == '\'' && cleanedPath[len(cleanedPath)-1] == '\'') ||
+			(cleanedPath[0] == '"' && cleanedPath[len(cleanedPath)-1] == '"') {
+			cleanedPath = cleanedPath[1 : len(cleanedPath)-1]
+		}
+	}
+
+	// Trim again after removing quotes
+	cleanedPath = strings.TrimSpace(cleanedPath)
+
+	if cleanedPath == "" {
+		return fmt.Errorf("path cannot be empty after removing quotes")
+	}
 
 	// Security: Check for directory traversal attempts
-	if strings.Contains(path, "..") {
+	if strings.Contains(cleanedPath, "..") {
 		return fmt.Errorf("path cannot contain '..' (directory traversal)")
 	}
 
 	// Convert to absolute path
-	absPath, err := filepath.Abs(path)
+	absPath, err := filepath.Abs(cleanedPath)
 	if err != nil {
 		return fmt.Errorf("invalid path format: %v", err)
 	}
@@ -97,7 +201,18 @@ func ValidateOutputPathBasic(input string) error {
 	// Clean the path
 	cleanPath := filepath.Clean(absPath)
 
-	// Ensure it will have .gif extension
+	// Check for invalid characters (platform-specific)
+	if err := validatePathCharacters(cleanPath); err != nil {
+		return err
+	}
+
+	// Check if it's an existing directory - this is valid, we'll append output.gif
+	if stat, err := os.Stat(cleanPath); err == nil && stat.IsDir() {
+		return nil // Directory is valid, we'll handle appending filename later
+	}
+
+	// If it's not an existing directory, treat it as a file path
+	// Ensure it will have .gif extension for validation purposes
 	if !strings.HasSuffix(strings.ToLower(cleanPath), ".gif") {
 		cleanPath += ".gif"
 	}
@@ -118,15 +233,48 @@ func ValidateOutputPathBasic(input string) error {
 
 // ValidateOutputPath performs comprehensive validation of output path
 func ValidateOutputPath(outputPath string) error {
-	// First run basic validation
-	if err := ValidateOutputPathBasic(outputPath); err != nil {
+	// Clean the path first (handle quotes like in basic validation)
+	cleanedPath := strings.TrimSpace(outputPath)
+
+	// Remove surrounding quotes (single or double) that Finder might add
+	if len(cleanedPath) >= 2 {
+		if (cleanedPath[0] == '\'' && cleanedPath[len(cleanedPath)-1] == '\'') ||
+			(cleanedPath[0] == '"' && cleanedPath[len(cleanedPath)-1] == '"') {
+			cleanedPath = cleanedPath[1 : len(cleanedPath)-1]
+		}
+	}
+
+	// Trim again after removing quotes
+	cleanedPath = strings.TrimSpace(cleanedPath)
+
+	// First run basic validation on the cleaned path
+	if err := ValidateOutputPathBasic(cleanedPath); err != nil {
 		return err
 	}
 
-	cleanPath := filepath.Clean(outputPath)
+	// Convert to absolute path
+	absPath, err := filepath.Abs(cleanedPath)
+	if err != nil {
+		return fmt.Errorf("invalid path format: %v", err)
+	}
 
-	// Ensure .gif extension
-	if !strings.HasSuffix(strings.ToLower(cleanPath), ".gif") {
+	cleanPath := filepath.Clean(absPath)
+
+	// Check for invalid characters (platform-specific)
+	if err := validatePathCharacters(cleanPath); err != nil {
+		return err
+	}
+
+	// Special check: if path looks like a directory but doesn't exist
+	if err := checkForNonExistentDirectory(outputPath, cleanPath); err != nil {
+		return err
+	}
+
+	// Check if it's an existing directory - append output.gif
+	if stat, err := os.Stat(cleanPath); err == nil && stat.IsDir() {
+		cleanPath = filepath.Join(cleanPath, "output.gif")
+	} else if !strings.HasSuffix(strings.ToLower(cleanPath), ".gif") {
+		// If it's not a directory and doesn't end with .gif, add .gif extension
 		cleanPath += ".gif"
 	}
 
@@ -186,20 +334,24 @@ func validatePathSecurity(path string) error {
 		return fmt.Errorf("cannot resolve absolute path: %v", err)
 	}
 
-	// Check for null bytes (security vulnerability)
-	if strings.Contains(absPath, "\x00") {
-		return fmt.Errorf("path contains null bytes")
+	// Check for invalid characters (platform-specific)
+	if err := validatePathCharacters(absPath); err != nil {
+		return err
 	}
 
-	// Check path length (avoid extremely long paths that could cause issues)
-	if len(absPath) > 4096 {
-		return fmt.Errorf("path too long (max 4096 characters)")
+	// Check path length (platform-specific limits)
+	maxLen := getMaxPathLength()
+	if len(absPath) > maxLen {
+		return fmt.Errorf("path too long (max %d characters)", maxLen)
 	}
 
-	// Ensure path doesn't try to escape to system directories
-	systemDirs := []string{"/etc", "/usr", "/bin", "/sbin", "/boot", "/sys", "/proc"}
+	// Ensure path doesn't try to escape to system directories (platform-specific)
+	systemDirs := getSystemDirectories()
+	normalizedPath := normalizePathForComparison(absPath)
+
 	for _, sysDir := range systemDirs {
-		if strings.HasPrefix(absPath, sysDir) {
+		normalizedSysDir := normalizePathForComparison(sysDir)
+		if strings.HasPrefix(normalizedPath, normalizedSysDir) {
 			return fmt.Errorf("cannot write to system directory: %s", sysDir)
 		}
 	}
@@ -249,4 +401,94 @@ func SanitizePath(path string) (string, error) {
 	cleanPath := filepath.Clean(absPath)
 
 	return cleanPath, nil
+}
+
+// validatePathCharacters checks for invalid characters based on OS
+func validatePathCharacters(path string) error {
+	if runtime.GOOS == "windows" {
+		// Windows reserved characters
+		invalidChars := []string{"<", ">", ":", "\"", "|", "?", "*"}
+		for _, char := range invalidChars {
+			if strings.Contains(path, char) {
+				return fmt.Errorf("path contains invalid character: %s", char)
+			}
+		}
+
+		// Windows reserved names (case-insensitive)
+		baseName := strings.ToUpper(filepath.Base(path))
+		// Remove extension for comparison
+		if idx := strings.LastIndex(baseName, "."); idx != -1 {
+			baseName = baseName[:idx]
+		}
+
+		reservedNames := []string{
+			"CON", "PRN", "AUX", "NUL",
+			"COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8", "COM9",
+			"LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9",
+		}
+
+		for _, reserved := range reservedNames {
+			if baseName == reserved {
+				return fmt.Errorf("path uses reserved Windows name: %s", reserved)
+			}
+		}
+	}
+
+	// Universal checks for all platforms
+	if strings.Contains(path, "\x00") {
+		return fmt.Errorf("path contains null bytes")
+	}
+
+	return nil
+}
+
+// checkForNonExistentDirectory checks if a path looks like a directory but doesn't exist
+func checkForNonExistentDirectory(originalPath, cleanedPath string) error {
+	// First check if the path exists
+	if _, err := os.Stat(cleanedPath); err == nil {
+		// Path exists, no issue here
+		return nil
+	} else if !os.IsNotExist(err) {
+		// Some other error accessing the path
+		return fmt.Errorf("cannot access path: %v", err)
+	}
+
+	// Path doesn't exist - check if it looks like the user intended it to be a directory
+	if looksLikeDirectory(originalPath) {
+		return fmt.Errorf("path '%s' looks like a directory but doesn't exist. Please either:\n  • Create the directory first, or\n  • Provide a filename (e.g., 'my_video.gif')", originalPath)
+	}
+
+	return nil
+}
+
+// looksLikeDirectory determines if a path looks like it's intended to be a directory
+func looksLikeDirectory(path string) bool {
+	// Remove leading ./ if present
+	cleanPath := strings.TrimPrefix(path, "./")
+	cleanPath = strings.TrimPrefix(cleanPath, ".\\") // Windows
+
+	// Check for directory-like indicators:
+	// 1. Ends with a path separator
+	if strings.HasSuffix(path, "/") || strings.HasSuffix(path, "\\") {
+		return true
+	}
+
+	// 2. Contains path separators (likely a subdirectory)
+	if strings.Contains(cleanPath, "/") || strings.Contains(cleanPath, "\\") {
+		return true
+	}
+
+	// 3. No file extension and looks like a folder name
+	if !strings.Contains(filepath.Base(cleanPath), ".") {
+		// Common directory-like names
+		lowerBase := strings.ToLower(filepath.Base(cleanPath))
+		dirWords := []string{"gifs", "videos", "output", "exports", "files", "media", "images", "tmp", "temp", "data", "assets"}
+		for _, word := range dirWords {
+			if lowerBase == word || strings.Contains(lowerBase, word) {
+				return true
+			}
+		}
+	}
+
+	return false
 }

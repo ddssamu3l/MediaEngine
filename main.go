@@ -87,7 +87,7 @@ func main() {
 	if videoInfo.FileSize > MaxFileSizeBytes {
 		fmt.Println(warningStyle.Render(fmt.Sprintf("⚠️  Warning: File size (%.1f MB) exceeds recommended limit of %d MB",
 			float64(videoInfo.FileSize)/(1024*1024), MaxFileSizeMB)))
-		if !confirmProceed("Do you want to proceed anyway? (y/N): ") {
+		if !confirmProceed("Do you want to proceed anyway? (y/N): ", false) {
 			fmt.Println("Operation cancelled.")
 			os.Exit(0)
 		}
@@ -100,15 +100,9 @@ func main() {
 	config.Resolution = getResolution()
 	config.OutputPath = getOutputPath()
 
-	// Validate output path
-	if err := validation.ValidateOutputPath(config.OutputPath); err != nil {
-		fmt.Println(errorStyle.Render(fmt.Sprintf("❌ Output path error: %v", err)))
-		os.Exit(1)
-	}
-
 	// Show conversion summary
 	showConversionSummary(config, videoInfo)
-	if !confirmProceed("Proceed with conversion? (Y/n): ") {
+	if !confirmProceed("Proceed with conversion? (Y/n): ", true) {
 		fmt.Println("Operation cancelled.")
 		os.Exit(0)
 	}
@@ -139,12 +133,6 @@ func getInputPath() string {
 		Validate: func(input string) error {
 			return validation.ValidateInputPath(input)
 		},
-		Templates: &promptui.PromptTemplates{
-			Prompt:  "{{ . }}",
-			Valid:   "{{ . | green }}",
-			Invalid: "{{ . | red }}",
-			Success: "{{ . | bold }}",
-		},
 	}
 
 	result, err := prompt.Run()
@@ -153,8 +141,22 @@ func getInputPath() string {
 		os.Exit(1)
 	}
 
+	// Clean the input: trim whitespace and remove surrounding quotes
+	cleanedPath := strings.TrimSpace(result)
+
+	// Remove surrounding quotes (single or double) that Finder might add
+	if len(cleanedPath) >= 2 {
+		if (cleanedPath[0] == '\'' && cleanedPath[len(cleanedPath)-1] == '\'') ||
+			(cleanedPath[0] == '"' && cleanedPath[len(cleanedPath)-1] == '"') {
+			cleanedPath = cleanedPath[1 : len(cleanedPath)-1]
+		}
+	}
+
+	// Trim again after removing quotes
+	cleanedPath = strings.TrimSpace(cleanedPath)
+
 	// Convert to absolute path and clean it
-	absPath, err := filepath.Abs(strings.TrimSpace(result))
+	absPath, err := filepath.Abs(cleanedPath)
 	if err != nil {
 		fmt.Println(errorStyle.Render(fmt.Sprintf("❌ Invalid path: %v", err)))
 		os.Exit(1)
@@ -317,21 +319,15 @@ func getResolution() string {
 }
 
 func getOutputPath() string {
-	cwd, _ := os.Getwd()
 	prompt := promptui.Prompt{
-		Label:   "💾 Enter output GIF path",
-		Default: filepath.Join(cwd, "output.gif"),
+		Label: "💾 Enter output GIF path (press Enter for current directory)",
 		Validate: func(input string) error {
 			if strings.TrimSpace(input) == "" {
-				return fmt.Errorf("output path cannot be empty")
+				return nil // Allow empty for default (current directory)
 			}
-			return validation.ValidateOutputPathBasic(input)
-		},
-		Templates: &promptui.PromptTemplates{
-			Prompt:  "{{ . }}",
-			Valid:   "{{ . | green }}",
-			Invalid: "{{ . | red }}",
-			Success: "{{ . | bold }}",
+
+			// Validate the original input first to catch directory-like paths
+			return validation.ValidateOutputPath(input)
 		},
 	}
 
@@ -341,14 +337,46 @@ func getOutputPath() string {
 		os.Exit(1)
 	}
 
-	// Convert to absolute path and ensure .gif extension
-	absPath, err := filepath.Abs(strings.TrimSpace(result))
-	if err != nil {
-		fmt.Println(errorStyle.Render(fmt.Sprintf("❌ Invalid path: %v", err)))
-		os.Exit(1)
+	// Handle empty input (default to current directory)
+	if strings.TrimSpace(result) == "" {
+		cwd, _ := os.Getwd()
+		return filepath.Join(cwd, "output.gif")
 	}
 
-	// Ensure .gif extension
+	// Process the path using the same logic as validation
+	return processOutputPath(result)
+}
+
+// processOutputPath handles path cleaning, quote removal, and extension addition
+func processOutputPath(input string) string {
+	// Clean the input: trim whitespace and remove surrounding quotes
+	cleanedPath := strings.TrimSpace(input)
+
+	// Remove surrounding quotes (single or double) that Finder might add
+	if len(cleanedPath) >= 2 {
+		if (cleanedPath[0] == '\'' && cleanedPath[len(cleanedPath)-1] == '\'') ||
+			(cleanedPath[0] == '"' && cleanedPath[len(cleanedPath)-1] == '"') {
+			cleanedPath = cleanedPath[1 : len(cleanedPath)-1]
+		}
+	}
+
+	// Trim again after removing quotes
+	cleanedPath = strings.TrimSpace(cleanedPath)
+
+	// Convert to absolute path
+	absPath, err := filepath.Abs(cleanedPath)
+	if err != nil {
+		// Return the original if we can't convert to absolute path
+		// The validation will catch this error
+		return cleanedPath
+	}
+
+	// Check if the path exists and is a directory - if so, append output.gif
+	if stat, err := os.Stat(absPath); err == nil && stat.IsDir() {
+		return filepath.Join(absPath, "output.gif")
+	}
+
+	// If it doesn't end with .gif, add .gif extension
 	if !strings.HasSuffix(strings.ToLower(absPath), ".gif") {
 		absPath += ".gif"
 	}
@@ -356,10 +384,25 @@ func getOutputPath() string {
 	return filepath.Clean(absPath)
 }
 
-func confirmProceed(message string) bool {
+func confirmProceed(message string, defaultYes bool) bool {
+	defaultValue := "n"
+	if defaultYes {
+		defaultValue = "y"
+	}
+
 	prompt := promptui.Prompt{
-		Label:     message,
-		IsConfirm: true,
+		Label:   message,
+		Default: defaultValue,
+		Validate: func(input string) error {
+			if strings.TrimSpace(input) == "" {
+				return nil // Allow empty for default
+			}
+			lower := strings.ToLower(strings.TrimSpace(input))
+			if lower == "y" || lower == "yes" || lower == "n" || lower == "no" {
+				return nil
+			}
+			return fmt.Errorf("please enter y/yes or n/no")
+		},
 	}
 
 	result, err := prompt.Run()
@@ -367,7 +410,13 @@ func confirmProceed(message string) bool {
 		return false
 	}
 
-	return strings.ToLower(result) == "y" || strings.ToLower(result) == "yes"
+	// Handle empty input (use the specified default)
+	if strings.TrimSpace(result) == "" {
+		return defaultYes
+	}
+
+	lower := strings.ToLower(strings.TrimSpace(result))
+	return lower == "y" || lower == "yes"
 }
 
 func showConversionSummary(config *ConversionConfig, videoInfo *video.VideoInfo) {
@@ -377,7 +426,7 @@ func showConversionSummary(config *ConversionConfig, videoInfo *video.VideoInfo)
 
 	fmt.Printf("• Input: %s\n", filepath.Base(config.InputPath))
 	fmt.Printf("• Output: %s\n", filepath.Base(config.OutputPath))
-	fmt.Printf("• Clip duration: %s (%.2f - %.2f seconds)\n",
+	fmt.Printf("• Clip duration: %s (%.2f - %.2f seconds) \n",
 		ui.FormatDuration(duration), config.StartTime, config.EndTime)
 	fmt.Printf("• Frame rate: %d fps\n", config.FrameRate)
 	fmt.Printf("• Resolution: %s\n", config.Resolution)
