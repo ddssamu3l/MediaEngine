@@ -32,19 +32,20 @@ func DisplayVideoInfo(info *video.VideoInfo) {
 			"%s %dx%d\n"+
 			"%s %s\n"+
 			"%s %s\n"+
-			"%s %.2f seconds",
+			"%s %s",
 		labelStyle.Render("📁 File:"), valueStyle.Render(filepath.Base(info.Filepath)),
-		labelStyle.Render("📊 Size:"), valueStyle.Render(formatFileSize(info.FileSize)),
+		labelStyle.Render("📊 Size:"), valueStyle.Render(FormatFileSize(info.FileSize)),
 		labelStyle.Render("📐 Dimensions:"), info.Width, info.Height,
 		labelStyle.Render("🎬 Format:"), valueStyle.Render(info.Format),
 		labelStyle.Render("⚡ Bitrate:"), valueStyle.Render(formatBitrate(info.Bitrate)),
-		labelStyle.Render("⏱️  Duration:"), info.Duration,
+		labelStyle.Render("⏱️  Duration:"), valueStyle.Render(FormatDuration(info.Duration)),
 	)
 
 	fmt.Println(infoStyle.Render(content))
 }
 
-func formatFileSize(bytes int64) string {
+// FormatFileSize converts bytes to human-readable format
+func FormatFileSize(bytes int64) string {
 	const unit = 1024
 	if bytes < unit {
 		return fmt.Sprintf("%d B", bytes)
@@ -55,6 +56,15 @@ func formatFileSize(bytes int64) string {
 		exp++
 	}
 	return fmt.Sprintf("%.1f %cB", float64(bytes)/float64(div), "KMGTPE"[exp])
+}
+
+// FormatDuration converts seconds to MM:SS format
+func FormatDuration(seconds float64) string {
+	totalSeconds := int(seconds)
+	minutes := totalSeconds / 60
+	remainingSeconds := totalSeconds % 60
+
+	return fmt.Sprintf("%02d:%02d", minutes, remainingSeconds)
 }
 
 func formatBitrate(bitrate int64) string {

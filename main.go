@@ -2,7 +2,6 @@
 package main
 
 import (
-	"bufio"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -11,9 +10,16 @@ import (
 
 	"videotogif/internal/ffmpeg"
 	"videotogif/internal/ui"
+	"videotogif/internal/validation"
 	"videotogif/internal/video"
 
 	"github.com/charmbracelet/lipgloss"
+	"github.com/manifoldco/promptui"
+)
+
+const (
+	MaxFileSizeMB    = 500
+	MaxFileSizeBytes = MaxFileSizeMB * 1024 * 1024
 )
 
 var (
@@ -32,6 +38,10 @@ var (
 
 	successStyle = lipgloss.NewStyle().
 			Foreground(lipgloss.Color("#10B981")).
+			Bold(true)
+
+	warningStyle = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("#F59E0B")).
 			Bold(true)
 )
 
@@ -52,14 +62,17 @@ func main() {
 	if !ffmpeg.IsFFmpegAvailable() {
 		fmt.Println(errorStyle.Render("❌ FFmpeg is not installed or not in PATH"))
 		fmt.Println("Please install FFmpeg and try again.")
+		fmt.Println("\nInstallation instructions:")
+		fmt.Println("• macOS: brew install ffmpeg")
+		fmt.Println("• Ubuntu/Debian: sudo apt install ffmpeg")
+		fmt.Println("• Windows: Download from https://ffmpeg.org/download.html")
 		os.Exit(1)
 	}
 
 	config := &ConversionConfig{}
-	scanner := bufio.NewScanner(os.Stdin)
 
-	// Get input video path
-	config.InputPath = getInputPath(scanner)
+	// Get and validate input video path
+	config.InputPath = getInputPath()
 
 	// Get and display video information
 	videoInfo, err := video.GetVideoInfo(config.InputPath)
@@ -70,12 +83,35 @@ func main() {
 
 	ui.DisplayVideoInfo(videoInfo)
 
+	// Validate file size
+	if videoInfo.FileSize > MaxFileSizeBytes {
+		fmt.Println(warningStyle.Render(fmt.Sprintf("⚠️  Warning: File size (%.1f MB) exceeds recommended limit of %d MB",
+			float64(videoInfo.FileSize)/(1024*1024), MaxFileSizeMB)))
+		if !confirmProceed("Do you want to proceed anyway? (y/N): ") {
+			fmt.Println("Operation cancelled.")
+			os.Exit(0)
+		}
+	}
+
 	// Get conversion parameters
-	config.StartTime = getStartTime(scanner, videoInfo.Duration)
-	config.EndTime = getEndTime(scanner, videoInfo.Duration, config.StartTime)
-	config.FrameRate = getFrameRate(scanner)
+	config.StartTime = getStartTime(videoInfo.Duration)
+	config.EndTime = getEndTime(videoInfo.Duration, config.StartTime)
+	config.FrameRate = getFrameRate()
 	config.Resolution = getResolution()
-	config.OutputPath = getOutputPath(scanner)
+	config.OutputPath = getOutputPath()
+
+	// Validate output path
+	if err := validation.ValidateOutputPath(config.OutputPath); err != nil {
+		fmt.Println(errorStyle.Render(fmt.Sprintf("❌ Output path error: %v", err)))
+		os.Exit(1)
+	}
+
+	// Show conversion summary
+	showConversionSummary(config, videoInfo)
+	if !confirmProceed("Proceed with conversion? (Y/n): ") {
+		fmt.Println("Operation cancelled.")
+		os.Exit(0)
+	}
 
 	// Perform conversion
 	fmt.Println("\n" + promptStyle.Render("🔄 Converting video to GIF..."))
@@ -89,114 +125,184 @@ func main() {
 	}
 
 	fmt.Println(successStyle.Render("✅ Conversion completed successfully!"))
-	fmt.Printf("GIF saved to: %s\n", config.OutputPath)
-}
+	fmt.Printf("📁 GIF saved to: %s\n", config.OutputPath)
 
-func getInputPath(scanner *bufio.Scanner) string {
-	for {
-		fmt.Print(promptStyle.Render("📁 Enter video file path: "))
-		scanner.Scan()
-		path := strings.TrimSpace(scanner.Text())
-
-		if path == "" {
-			fmt.Println(errorStyle.Render("❌ Path cannot be empty"))
-			continue
-		}
-
-		// Convert to absolute path
-		absPath, err := filepath.Abs(path)
-		if err != nil {
-			fmt.Println(errorStyle.Render(fmt.Sprintf("❌ Invalid path: %v", err)))
-			continue
-		}
-
-		// Check if file exists
-		if _, err := os.Stat(absPath); os.IsNotExist(err) {
-			fmt.Println(errorStyle.Render("❌ File does not exist"))
-			continue
-		}
-
-		return absPath
+	// Show output file info
+	if stat, err := os.Stat(config.OutputPath); err == nil {
+		fmt.Printf("📊 Output size: %s\n", ui.FormatFileSize(stat.Size()))
 	}
 }
 
-func getStartTime(scanner *bufio.Scanner, duration float64) float64 {
-	for {
-		fmt.Printf(promptStyle.Render("⏰ Enter start time in seconds (0 - %.2f): "), duration)
-		scanner.Scan()
-		input := strings.TrimSpace(scanner.Text())
-
-		if input == "" {
-			return 0
-		}
-
-		startTime, err := strconv.ParseFloat(input, 64)
-		if err != nil {
-			fmt.Println(errorStyle.Render("❌ Invalid number"))
-			continue
-		}
-
-		if startTime < 0 || startTime >= duration {
-			fmt.Println(errorStyle.Render(fmt.Sprintf("❌ Start time must be between 0 and %.2f", duration)))
-			continue
-		}
-
-		return startTime
+func getInputPath() string {
+	prompt := promptui.Prompt{
+		Label: "📁 Enter video file path",
+		Validate: func(input string) error {
+			return validation.ValidateInputPath(input)
+		},
+		Templates: &promptui.PromptTemplates{
+			Prompt:  "{{ . }}",
+			Valid:   "{{ . | green }}",
+			Invalid: "{{ . | red }}",
+			Success: "{{ . | bold }}",
+		},
 	}
+
+	result, err := prompt.Run()
+	if err != nil {
+		fmt.Println(errorStyle.Render("❌ Operation cancelled"))
+		os.Exit(1)
+	}
+
+	// Convert to absolute path and clean it
+	absPath, err := filepath.Abs(strings.TrimSpace(result))
+	if err != nil {
+		fmt.Println(errorStyle.Render(fmt.Sprintf("❌ Invalid path: %v", err)))
+		os.Exit(1)
+	}
+
+	return filepath.Clean(absPath)
 }
 
-func getEndTime(scanner *bufio.Scanner, duration, startTime float64) float64 {
-	for {
-		fmt.Printf(promptStyle.Render("⏰ Enter end time in seconds (%.2f - %.2f): "), startTime, duration)
-		scanner.Scan()
-		input := strings.TrimSpace(scanner.Text())
-
-		if input == "" {
-			return duration
-		}
-
-		endTime, err := strconv.ParseFloat(input, 64)
-		if err != nil {
-			fmt.Println(errorStyle.Render("❌ Invalid number"))
-			continue
-		}
-
-		if endTime <= startTime || endTime > duration {
-			fmt.Println(errorStyle.Render(fmt.Sprintf("❌ End time must be between %.2f and %.2f", startTime, duration)))
-			continue
-		}
-
-		return endTime
+func getStartTime(duration float64) float64 {
+	durationStr := ui.FormatDuration(duration)
+	prompt := promptui.Prompt{
+		Label:   fmt.Sprintf("⏰ Enter start time in seconds (0 - %.2f) [%s]", duration, durationStr),
+		Default: "0",
+		Validate: func(input string) error {
+			if strings.TrimSpace(input) == "" {
+				return nil // Allow empty for default
+			}
+			value, err := strconv.ParseFloat(input, 64)
+			if err != nil {
+				return fmt.Errorf("invalid number format")
+			}
+			if value < 0 {
+				return fmt.Errorf("start time cannot be negative")
+			}
+			if value >= duration {
+				return fmt.Errorf("start time must be less than video duration (%.2f seconds)", duration)
+			}
+			return nil
+		},
 	}
+
+	result, err := prompt.Run()
+	if err != nil {
+		fmt.Println(errorStyle.Render("❌ Operation cancelled"))
+		os.Exit(1)
+	}
+
+	if strings.TrimSpace(result) == "" {
+		return 0
+	}
+
+	startTime, _ := strconv.ParseFloat(result, 64)
+	return startTime
 }
 
-func getFrameRate(scanner *bufio.Scanner) int {
-	for {
-		fmt.Print(promptStyle.Render("🎞️  Enter frame rate (1-30, default 15): "))
-		scanner.Scan()
-		input := strings.TrimSpace(scanner.Text())
-
-		if input == "" {
-			return 15
-		}
-
-		frameRate, err := strconv.Atoi(input)
-		if err != nil {
-			fmt.Println(errorStyle.Render("❌ Invalid number"))
-			continue
-		}
-
-		if frameRate < 1 || frameRate > 30 {
-			fmt.Println(errorStyle.Render("❌ Frame rate must be between 1 and 30"))
-			continue
-		}
-
-		return frameRate
+func getEndTime(duration, startTime float64) float64 {
+	durationStr := ui.FormatDuration(duration)
+	prompt := promptui.Prompt{
+		Label:   fmt.Sprintf("⏰ Enter end time in seconds (%.2f - %.2f) [%s]", startTime, duration, durationStr),
+		Default: fmt.Sprintf("%.2f", duration),
+		Validate: func(input string) error {
+			if strings.TrimSpace(input) == "" {
+				return nil // Allow empty for default
+			}
+			value, err := strconv.ParseFloat(input, 64)
+			if err != nil {
+				return fmt.Errorf("invalid number format")
+			}
+			if value <= startTime {
+				return fmt.Errorf("end time must be greater than start time (%.2f)", startTime)
+			}
+			if value > duration {
+				return fmt.Errorf("end time cannot exceed video duration (%.2f seconds)", duration)
+			}
+			return nil
+		},
 	}
+
+	result, err := prompt.Run()
+	if err != nil {
+		fmt.Println(errorStyle.Render("❌ Operation cancelled"))
+		os.Exit(1)
+	}
+
+	if strings.TrimSpace(result) == "" {
+		return duration
+	}
+
+	endTime, _ := strconv.ParseFloat(result, 64)
+	return endTime
+}
+
+func getFrameRate() int {
+	prompt := promptui.Prompt{
+		Label:   "🎞️  Enter frame rate (1-30 fps)",
+		Default: "15",
+		Validate: func(input string) error {
+			if strings.TrimSpace(input) == "" {
+				return nil // Allow empty for default
+			}
+			value, err := strconv.Atoi(input)
+			if err != nil {
+				return fmt.Errorf("invalid number format")
+			}
+			if value < 1 || value > 30 {
+				return fmt.Errorf("frame rate must be between 1 and 30 fps")
+			}
+			return nil
+		},
+	}
+
+	result, err := prompt.Run()
+	if err != nil {
+		fmt.Println(errorStyle.Render("❌ Operation cancelled"))
+		os.Exit(1)
+	}
+
+	if strings.TrimSpace(result) == "" {
+		return 15
+	}
+
+	frameRate, _ := strconv.Atoi(result)
+	return frameRate
 }
 
 func getResolution() string {
 	resolutions := []string{
+		"320x240   (QVGA)",
+		"480x360   (Small)",
+		"640x480   (VGA)",
+		"800x600   (SVGA)",
+		"1024x768  (XGA)",
+		"1280x720  (HD)",
+		"1920x1080 (Full HD)",
+		"Original  (Keep original resolution)",
+	}
+
+	prompt := promptui.Select{
+		Label:        "📐 Select output resolution",
+		Items:        resolutions,
+		Size:         8,
+		HideSelected: true,
+		Templates: &promptui.SelectTemplates{
+			Label:    "{{ . }}",
+			Active:   "▶ {{ . | cyan | bold }}",
+			Inactive: "  {{ . | faint }}",
+			Selected: "{{ . | green | bold }}",
+		},
+	}
+
+	index, _, err := prompt.Run()
+	if err != nil {
+		fmt.Println(errorStyle.Render("❌ Operation cancelled"))
+		os.Exit(1)
+	}
+
+	// Extract resolution from the selected option
+	resolutionMappings := []string{
 		"320x240",
 		"480x360",
 		"640x480",
@@ -207,53 +313,75 @@ func getResolution() string {
 		"Original",
 	}
 
-	fmt.Println(promptStyle.Render("📐 Select resolution:"))
-	for i, res := range resolutions {
-		fmt.Printf("  %d) %s\n", i+1, res)
-	}
-
-	scanner := bufio.NewScanner(os.Stdin)
-	for {
-		fmt.Print(promptStyle.Render("Enter choice (1-8, default 4): "))
-		scanner.Scan()
-		input := strings.TrimSpace(scanner.Text())
-
-		if input == "" {
-			return resolutions[3] // 800x600
-		}
-
-		choice, err := strconv.Atoi(input)
-		if err != nil || choice < 1 || choice > len(resolutions) {
-			fmt.Println(errorStyle.Render("❌ Invalid choice"))
-			continue
-		}
-
-		return resolutions[choice-1]
-	}
+	return resolutionMappings[index]
 }
 
-func getOutputPath(scanner *bufio.Scanner) string {
-	for {
-		fmt.Print(promptStyle.Render("💾 Enter output GIF path (press Enter for current directory): "))
-		scanner.Scan()
-		path := strings.TrimSpace(scanner.Text())
-
-		if path == "" {
-			return "output.gif"
-		}
-
-		// Convert to absolute path
-		absPath, err := filepath.Abs(path)
-		if err != nil {
-			fmt.Println(errorStyle.Render(fmt.Sprintf("❌ Invalid path: %v", err)))
-			continue
-		}
-
-		// Ensure .gif extension
-		if !strings.HasSuffix(strings.ToLower(absPath), ".gif") {
-			absPath += ".gif"
-		}
-
-		return absPath
+func getOutputPath() string {
+	cwd, _ := os.Getwd()
+	prompt := promptui.Prompt{
+		Label:   "💾 Enter output GIF path",
+		Default: filepath.Join(cwd, "output.gif"),
+		Validate: func(input string) error {
+			if strings.TrimSpace(input) == "" {
+				return fmt.Errorf("output path cannot be empty")
+			}
+			return validation.ValidateOutputPathBasic(input)
+		},
+		Templates: &promptui.PromptTemplates{
+			Prompt:  "{{ . }}",
+			Valid:   "{{ . | green }}",
+			Invalid: "{{ . | red }}",
+			Success: "{{ . | bold }}",
+		},
 	}
+
+	result, err := prompt.Run()
+	if err != nil {
+		fmt.Println(errorStyle.Render("❌ Operation cancelled"))
+		os.Exit(1)
+	}
+
+	// Convert to absolute path and ensure .gif extension
+	absPath, err := filepath.Abs(strings.TrimSpace(result))
+	if err != nil {
+		fmt.Println(errorStyle.Render(fmt.Sprintf("❌ Invalid path: %v", err)))
+		os.Exit(1)
+	}
+
+	// Ensure .gif extension
+	if !strings.HasSuffix(strings.ToLower(absPath), ".gif") {
+		absPath += ".gif"
+	}
+
+	return filepath.Clean(absPath)
+}
+
+func confirmProceed(message string) bool {
+	prompt := promptui.Prompt{
+		Label:     message,
+		IsConfirm: true,
+	}
+
+	result, err := prompt.Run()
+	if err != nil {
+		return false
+	}
+
+	return strings.ToLower(result) == "y" || strings.ToLower(result) == "yes"
+}
+
+func showConversionSummary(config *ConversionConfig, videoInfo *video.VideoInfo) {
+	fmt.Println("\n" + promptStyle.Render("📋 Conversion Summary:"))
+
+	duration := config.EndTime - config.StartTime
+
+	fmt.Printf("• Input: %s\n", filepath.Base(config.InputPath))
+	fmt.Printf("• Output: %s\n", filepath.Base(config.OutputPath))
+	fmt.Printf("• Clip duration: %s (%.2f - %.2f seconds)\n",
+		ui.FormatDuration(duration), config.StartTime, config.EndTime)
+	fmt.Printf("• Frame rate: %d fps\n", config.FrameRate)
+	fmt.Printf("• Resolution: %s\n", config.Resolution)
+
+	estimatedFrames := int(duration * float64(config.FrameRate))
+	fmt.Printf("• Estimated frames: %d\n", estimatedFrames)
 }
