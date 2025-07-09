@@ -173,6 +173,66 @@ go install github.com/youruser/videotogif@latest
 # Make sure this directory is in your PATH
 ```
 
+## Global Installation
+
+To install `videotogif` globally so you can run it from anywhere on your system:
+
+### **🚀 Quick Install (Recommended)**
+
+Use the provided installation script:
+
+```bash
+# Make the script executable and run it
+chmod +x install.sh
+./install.sh
+
+# Or with specific options:
+./install.sh --user      # Install to ~/.local/bin (no sudo)
+./install.sh --system    # Install to /usr/local/bin (requires sudo)
+./install.sh --help      # Show all options
+```
+
+### **📋 Manual Installation Options**
+
+**Option 1: System-wide installation**
+```bash
+go build -o videotogif .
+sudo cp videotogif /usr/local/bin/
+```
+
+**Option 2: User installation (no sudo)**
+```bash
+# Create local bin directory
+mkdir -p ~/.local/bin
+
+# Build and install
+go build -o videotogif .
+cp videotogif ~/.local/bin/
+
+# Add to PATH (if not already added)
+echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.zshrc
+source ~/.zshrc
+```
+
+**Option 3: Homebrew directory**
+```bash
+go build -o videotogif .
+sudo cp videotogif /opt/homebrew/bin/
+```
+
+### **✅ Verify Installation**
+
+After installation, verify it works:
+```bash
+# Check if videotogif is in PATH
+which videotogif
+
+# Test the installation
+videotogif
+```
+
+You should now be able to run `videotogif` from any directory!
+
 ## Cross-Platform Builds
 
 Build for different platforms with full cross-platform path validation:
