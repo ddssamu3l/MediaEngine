@@ -14,6 +14,9 @@ const (
 	MaxFileSizeBytes = 500 * 1024 * 1024
 )
 
+// Add SupportedInputFormats to validation package
+var SupportedInputFormats = []string{".mp4", ".mkv", ".mov", ".avi", ".webm", ".flv", ".wmv"}
+
 // getSystemDirectories returns platform-specific system directories to protect
 func getSystemDirectories() []string {
 	switch runtime.GOOS {
@@ -137,10 +140,19 @@ func ValidateInputPath(input string) error {
 		return fmt.Errorf("path points to a directory, not a file: %s", cleanPath)
 	}
 
-	// Check file extension (must be .mp4)
+	// Check file extension (support multiple formats)
 	ext := strings.ToLower(filepath.Ext(cleanPath))
-	if ext != ".mp4" {
-		return fmt.Errorf("file must have .mp4 extension, got: %s", ext)
+	validExtension := false
+	for _, supportedExt := range SupportedInputFormats {
+		if ext == supportedExt {
+			validExtension = true
+			break
+		}
+	}
+
+	if !validExtension {
+		return fmt.Errorf("unsupported file format: %s. Supported formats: %s",
+			ext, strings.Join(SupportedInputFormats, ", "))
 	}
 
 	// Check file size

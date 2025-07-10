@@ -22,7 +22,11 @@ const (
 	MaxFileSizeBytes = MaxFileSizeMB * 1024 * 1024
 )
 
+// Add supported formats
 var (
+	SupportedInputFormats  = []string{".mp4", ".mkv", ".mov", ".avi", ".webm", ".flv", ".wmv"}
+	SupportedOutputFormats = []string{"GIF", "APNG", "WebP", "AVIF", "MP4", "WebM"}
+
 	titleStyle = lipgloss.NewStyle().
 			Bold(true).
 			Foreground(lipgloss.Color("#7C3AED")).
@@ -46,17 +50,19 @@ var (
 )
 
 type ConversionConfig struct {
-	InputPath  string
-	OutputPath string
-	StartTime  float64
-	EndTime    float64
-	FrameRate  int
-	Resolution string
+	InputPath    string
+	OutputPath   string
+	OutputFormat string // Add this field
+	StartTime    float64
+	EndTime      float64
+	FrameRate    int
+	Resolution   string
+	Quality      int // Add quality setting for different formats
 }
 
 func main() {
-	fmt.Println(titleStyle.Render("🎬 VideoToGIF Converter"))
-	fmt.Println("Convert MP4 videos to GIF with ease!\n")
+	fmt.Println(titleStyle.Render("🎬 Universal Media Converter"))
+	fmt.Println("Convert videos to multiple formats with ease!\n")
 
 	// Check if FFmpeg is available
 	if !ffmpeg.IsFFmpegAvailable() {
@@ -94,11 +100,13 @@ func main() {
 	}
 
 	// Get conversion parameters
+	config.OutputFormat = getOutputFormat() // Add this line
 	config.StartTime = getStartTime(videoInfo.Duration)
 	config.EndTime = getEndTime(videoInfo.Duration, config.StartTime)
 	config.FrameRate = getFrameRate()
 	config.Resolution = getResolution()
-	config.OutputPath = getOutputPath()
+	config.Quality = getQuality(config.OutputFormat)       // Add quality setting
+	config.OutputPath = getOutputPath(config.OutputFormat) // Pass format to get appropriate extension
 
 	// Show conversion summary
 	showConversionSummary(config, videoInfo)
@@ -108,10 +116,11 @@ func main() {
 	}
 
 	// Perform conversion
-	fmt.Println("\n" + promptStyle.Render("🔄 Converting video to GIF..."))
+	fmt.Println("\n" + promptStyle.Render("🔄 Converting media..."))
 
-	err = ffmpeg.ConvertToGIF(config.InputPath, config.OutputPath,
-		config.StartTime, config.EndTime, config.FrameRate, config.Resolution)
+	// Update conversion call
+	err = ffmpeg.ConvertMedia(config.InputPath, config.OutputPath, config.OutputFormat,
+		config.StartTime, config.EndTime, config.FrameRate, config.Quality, config.Resolution)
 
 	if err != nil {
 		fmt.Println(errorStyle.Render(fmt.Sprintf("❌ Conversion failed: %v", err)))
@@ -119,7 +128,7 @@ func main() {
 	}
 
 	fmt.Println(successStyle.Render("✅ Conversion completed successfully!"))
-	fmt.Printf("📁 GIF saved to: %s\n", config.OutputPath)
+	fmt.Printf("📁 %s saved to: %s\n", config.OutputFormat, config.OutputPath)
 
 	// Show output file info
 	if stat, err := os.Stat(config.OutputPath); err == nil {
@@ -318,15 +327,123 @@ func getResolution() string {
 	return resolutionMappings[index]
 }
 
-func getOutputPath() string {
+func getOutputFormat() string {
+	formats := []string{
+		"GIF       (Graphics Interchange Format)",
+		"APNG      (Animated PNG)",
+		"WebP      (Google WebP)",
+		"AVIF      (AV1 Image File Format)",
+		"MP4       (MPEG-4 Video)",
+		"WebM      (WebM Video)",
+	}
+
+	prompt := promptui.Select{
+		Label:        "🎯 Select output format",
+		Items:        formats,
+		Size:         6,
+		HideSelected: true,
+		Templates: &promptui.SelectTemplates{
+			Label:    "{{ . }}",
+			Active:   "▶ {{ . | cyan | bold }}",
+			Inactive: "  {{ . | faint }}",
+			Selected: "{{ . | green | bold }}",
+		},
+	}
+
+	index, _, err := prompt.Run()
+	if err != nil {
+		fmt.Println(errorStyle.Render("❌ Operation cancelled"))
+		os.Exit(1)
+	}
+
+	return SupportedOutputFormats[index]
+}
+
+func getQuality(outputFormat string) int {
+	// Different quality ranges for different formats
+	var maxQuality int
+	var defaultQuality int
+	var qualityDesc string
+
+	switch outputFormat {
+	case "GIF":
+		return 0 // GIF doesn't use quality setting
+	case "APNG":
+		return 0 // APNG doesn't use quality setting
+	case "WebP":
+		maxQuality = 100
+		defaultQuality = 80
+		qualityDesc = "WebP quality (0-100, higher is better)"
+	case "AVIF":
+		maxQuality = 63
+		defaultQuality = 30
+		qualityDesc = "AVIF quality (0-63, higher is better)"
+	case "MP4", "WebM":
+		maxQuality = 51
+		defaultQuality = 23
+		qualityDesc = "Video CRF (0-51, lower is better quality)"
+	default:
+		return 0
+	}
+
 	prompt := promptui.Prompt{
-		Label: "💾 Enter output GIF path (press Enter for current directory)",
+		Label:   fmt.Sprintf("⚡ %s", qualityDesc),
+		Default: fmt.Sprintf("%d", defaultQuality),
+		Validate: func(input string) error {
+			if strings.TrimSpace(input) == "" {
+				return nil // Allow empty for default
+			}
+			value, err := strconv.Atoi(input)
+			if err != nil {
+				return fmt.Errorf("invalid number format")
+			}
+			if value < 0 || value > maxQuality {
+				return fmt.Errorf("quality must be between 0 and %d", maxQuality)
+			}
+			return nil
+		},
+	}
+
+	result, err := prompt.Run()
+	if err != nil {
+		fmt.Println(errorStyle.Render("❌ Operation cancelled"))
+		os.Exit(1)
+	}
+
+	if strings.TrimSpace(result) == "" {
+		return defaultQuality
+	}
+
+	quality, _ := strconv.Atoi(result)
+	return quality
+}
+
+func getOutputPath(outputFormat string) string {
+	// Get file extension based on format
+	var ext string
+	switch outputFormat {
+	case "GIF":
+		ext = ".gif"
+	case "APNG":
+		ext = ".png"
+	case "WebP":
+		ext = ".webp"
+	case "AVIF":
+		ext = ".avif"
+	case "MP4":
+		ext = ".mp4"
+	case "WebM":
+		ext = ".webm"
+	default:
+		ext = ".gif"
+	}
+
+	prompt := promptui.Prompt{
+		Label: fmt.Sprintf("💾 Enter output %s path (press Enter for current directory)", outputFormat),
 		Validate: func(input string) error {
 			if strings.TrimSpace(input) == "" {
 				return nil // Allow empty for default (current directory)
 			}
-
-			// Validate the original input first to catch directory-like paths
 			return validation.ValidateOutputPath(input)
 		},
 	}
@@ -340,11 +457,23 @@ func getOutputPath() string {
 	// Handle empty input (default to current directory)
 	if strings.TrimSpace(result) == "" {
 		cwd, _ := os.Getwd()
-		return filepath.Join(cwd, "output.gif")
+		return filepath.Join(cwd, "output"+ext)
 	}
 
-	// Process the path using the same logic as validation
-	return processOutputPath(result)
+	// Process the path and ensure correct extension
+	processedPath := processOutputPath(result)
+
+	// Ensure correct extension
+	currentExt := strings.ToLower(filepath.Ext(processedPath))
+	if currentExt != ext {
+		// Remove current extension if it exists and add correct one
+		if currentExt != "" {
+			processedPath = strings.TrimSuffix(processedPath, currentExt)
+		}
+		processedPath += ext
+	}
+
+	return processedPath
 }
 
 // processOutputPath handles path cleaning, quote removal, and extension addition
@@ -373,12 +502,12 @@ func processOutputPath(input string) string {
 
 	// Check if the path exists and is a directory - if so, append output.gif
 	if stat, err := os.Stat(absPath); err == nil && stat.IsDir() {
-		return filepath.Join(absPath, "output.gif")
+		return filepath.Join(absPath, "output."+strings.ToLower(filepath.Ext(absPath)))
 	}
 
 	// If it doesn't end with .gif, add .gif extension
-	if !strings.HasSuffix(strings.ToLower(absPath), ".gif") {
-		absPath += ".gif"
+	if !strings.HasSuffix(strings.ToLower(absPath), "."+strings.ToLower(filepath.Ext(absPath))) {
+		absPath += "." + strings.ToLower(filepath.Ext(absPath))
 	}
 
 	return filepath.Clean(absPath)
@@ -425,11 +554,15 @@ func showConversionSummary(config *ConversionConfig, videoInfo *video.VideoInfo)
 	duration := config.EndTime - config.StartTime
 
 	fmt.Printf("• Input: %s\n", filepath.Base(config.InputPath))
-	fmt.Printf("• Output: %s\n", filepath.Base(config.OutputPath))
+	fmt.Printf("• Output: %s (%s)\n", filepath.Base(config.OutputPath), config.OutputFormat)
 	fmt.Printf("• Clip duration: %s (%.2f - %.2f seconds) \n",
 		ui.FormatDuration(duration), config.StartTime, config.EndTime)
 	fmt.Printf("• Frame rate: %d fps\n", config.FrameRate)
 	fmt.Printf("• Resolution: %s\n", config.Resolution)
+
+	if config.Quality > 0 {
+		fmt.Printf("• Quality: %d\n", config.Quality)
+	}
 
 	estimatedFrames := int(duration * float64(config.FrameRate))
 	fmt.Printf("• Estimated frames: %d\n", estimatedFrames)
