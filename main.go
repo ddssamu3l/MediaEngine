@@ -22,7 +22,7 @@ const (
 	MaxFileSizeBytes = MaxFileSizeMB * 1024 * 1024
 )
 
-// Add supported formats
+// Supported formats
 var (
 	SupportedInputFormats  = []string{".mp4", ".mkv", ".mov", ".avi", ".webm", ".flv", ".wmv"}
 	SupportedOutputFormats = []string{"GIF", "APNG", "WebP", "AVIF", "MP4", "WebM"}
@@ -47,38 +47,46 @@ var (
 	warningStyle = lipgloss.NewStyle().
 			Foreground(lipgloss.Color("#F59E0B")).
 			Bold(true)
+
+	infoStyle = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("#3B82F6"))
 )
 
 type ConversionConfig struct {
-	InputPath    string
-	OutputPath   string
-	OutputFormat string // Add this field
-	StartTime    float64
-	EndTime      float64
-	FrameRate    int
-	Resolution   string
-	Quality      int // Add quality setting for different formats
+	InputPath      string
+	OutputPath     string
+	OutputFormat   string
+	StartTime      float64
+	EndTime        float64
+	FrameRate      int
+	Resolution     string
+	Quality        int
+	QualityProfile string
 }
 
 func main() {
-	fmt.Println(titleStyle.Render("🎬 Universal Media Converter"))
-	fmt.Println("Convert videos to multiple formats with ease!\n")
+	fmt.Println(titleStyle.Render("🎬 Universal Media Engine"))
+	fmt.Println("Professional video-to-media conversion with real-time progress tracking\n")
 
-	// Check if FFmpeg is available
+	// Check if FFmpeg and FFprobe are available
+	fmt.Print("🔍 Checking system requirements... ")
 	if !ffmpeg.IsFFmpegAvailable() {
-		fmt.Println(errorStyle.Render("❌ FFmpeg is not installed or not in PATH"))
-		fmt.Println("Please install FFmpeg and try again.")
+		fmt.Println("❌")
+		fmt.Println(errorStyle.Render("❌ FFmpeg or FFprobe is not installed or not in PATH"))
+		fmt.Println("Please install both FFmpeg and FFprobe:")
 		fmt.Println("\nInstallation instructions:")
 		fmt.Println("• macOS: brew install ffmpeg")
 		fmt.Println("• Ubuntu/Debian: sudo apt install ffmpeg")
 		fmt.Println("• Windows: Download from https://ffmpeg.org/download.html")
+		fmt.Println("\nNote: Both FFmpeg and FFprobe are required for full functionality.")
 		os.Exit(1)
 	}
+	fmt.Println("✅")
 
 	config := &ConversionConfig{}
 
-	// Get and validate input video path
-	config.InputPath = getInputPath()
+	// Get and validate input video path with comprehensive validation
+	config.InputPath = getInputPathWithValidation()
 
 	// Get and display video information
 	videoInfo, err := video.GetVideoInfo(config.InputPath)
@@ -89,7 +97,7 @@ func main() {
 
 	ui.DisplayVideoInfo(videoInfo)
 
-	// Validate file size
+	// Validate file size with warning
 	if videoInfo.FileSize > MaxFileSizeBytes {
 		fmt.Println(warningStyle.Render(fmt.Sprintf("⚠️  Warning: File size (%.1f MB) exceeds recommended limit of %d MB",
 			float64(videoInfo.FileSize)/(1024*1024), MaxFileSizeMB)))
@@ -100,13 +108,14 @@ func main() {
 	}
 
 	// Get conversion parameters
-	config.OutputFormat = getOutputFormat() // Add this line
+	config.OutputFormat = getOutputFormat()
+	config.QualityProfile = getQualityProfile()
 	config.StartTime = getStartTime(videoInfo.Duration)
 	config.EndTime = getEndTime(videoInfo.Duration, config.StartTime)
 	config.FrameRate = getFrameRate()
 	config.Resolution = getResolution()
-	config.Quality = getQuality(config.OutputFormat)       // Add quality setting
-	config.OutputPath = getOutputPath(config.OutputFormat) // Pass format to get appropriate extension
+	config.Quality = getQuality(config.OutputFormat, config.QualityProfile)
+	config.OutputPath = getOutputPath(config.OutputFormat)
 
 	// Show conversion summary
 	showConversionSummary(config, videoInfo)
@@ -115,15 +124,23 @@ func main() {
 		os.Exit(0)
 	}
 
-	// Perform conversion
-	fmt.Println("\n" + promptStyle.Render("🔄 Converting media..."))
+	// Perform conversion with progress tracking
+	fmt.Println("\n" + promptStyle.Render("🔄 Starting conversion..."))
 
-	// Update conversion call
-	err = ffmpeg.ConvertMedia(config.InputPath, config.OutputPath, config.OutputFormat,
-		config.StartTime, config.EndTime, config.FrameRate, config.Quality, config.Resolution)
+	err = ffmpeg.ConvertMediaWithProgress(config.InputPath, config.OutputPath, config.OutputFormat,
+		config.StartTime, config.EndTime, config.FrameRate, config.Quality, config.Resolution, config.QualityProfile)
 
 	if err != nil {
 		fmt.Println(errorStyle.Render(fmt.Sprintf("❌ Conversion failed: %v", err)))
+
+		// Provide helpful suggestions based on error type
+		if strings.Contains(err.Error(), "encoder") {
+			fmt.Println("\n💡 Suggestions:")
+			fmt.Println("• Check that your FFmpeg installation supports the selected output format")
+			fmt.Println("• Try a different output format")
+			fmt.Println("• Update FFmpeg to the latest version")
+		}
+
 		os.Exit(1)
 	}
 
@@ -133,10 +150,20 @@ func main() {
 	// Show output file info
 	if stat, err := os.Stat(config.OutputPath); err == nil {
 		fmt.Printf("📊 Output size: %s\n", ui.FormatFileSize(stat.Size()))
+
+		// Calculate compression ratio
+		if videoInfo.FileSize > 0 {
+			ratio := float64(stat.Size()) / float64(videoInfo.FileSize)
+			if ratio < 1.0 {
+				fmt.Printf("📈 Compression: %.1f%% of original size\n", ratio*100)
+			} else {
+				fmt.Printf("📈 Size change: %.1f%% of original size\n", ratio*100)
+			}
+		}
 	}
 }
 
-func getInputPath() string {
+func getInputPathWithValidation() string {
 	prompt := promptui.Prompt{
 		Label: "📁 Enter video file path",
 		Validate: func(input string) error {
@@ -150,8 +177,45 @@ func getInputPath() string {
 		os.Exit(1)
 	}
 
+	// Clean the input path
+	cleanedPath := cleanInputPath(result)
+
+	// Perform comprehensive validation
+	fmt.Print("🔍 Validating file content... ")
+	validationResult, err := validation.ValidateInputPathComprehensive(cleanedPath)
+	if err != nil {
+		fmt.Println("❌")
+		fmt.Println(errorStyle.Render(fmt.Sprintf("❌ Validation failed: %v", err)))
+		os.Exit(1)
+	}
+	fmt.Println("✅")
+
+	// Display warnings if any
+	if len(validationResult.Warnings) > 0 {
+		fmt.Println(warningStyle.Render("⚠️  Warnings:"))
+		for _, warning := range validationResult.Warnings {
+			fmt.Printf("  • %s\n", warning)
+		}
+		fmt.Println()
+	}
+
+	// Display file information
+	if validationResult.ActualFormat != "" {
+		fmt.Printf("📋 Detected format: %s\n", infoStyle.Render(validationResult.ActualFormat))
+	}
+	if validationResult.Codec != "" {
+		fmt.Printf("🎞️  Video codec: %s\n", infoStyle.Render(validationResult.Codec))
+	}
+	if validationResult.Duration > 0 {
+		fmt.Printf("⏱️  Duration: %s\n", infoStyle.Render(ui.FormatDuration(validationResult.Duration)))
+	}
+
+	return cleanedPath
+}
+
+func cleanInputPath(input string) string {
 	// Clean the input: trim whitespace and remove surrounding quotes
-	cleanedPath := strings.TrimSpace(result)
+	cleanedPath := strings.TrimSpace(input)
 
 	// Remove surrounding quotes (single or double) that Finder might add
 	if len(cleanedPath) >= 2 {
@@ -250,7 +314,7 @@ func getEndTime(duration, startTime float64) float64 {
 
 func getFrameRate() int {
 	prompt := promptui.Prompt{
-		Label:   "🎞️  Enter frame rate (1-30 fps)",
+		Label:   "🎞️  Enter frame rate (1-60 fps)",
 		Default: "15",
 		Validate: func(input string) error {
 			if strings.TrimSpace(input) == "" {
@@ -260,8 +324,8 @@ func getFrameRate() int {
 			if err != nil {
 				return fmt.Errorf("invalid number format")
 			}
-			if value < 1 || value > 30 {
-				return fmt.Errorf("frame rate must be between 1 and 30 fps")
+			if value < 1 || value > 60 {
+				return fmt.Errorf("frame rate must be between 1 and 60 fps")
 			}
 			return nil
 		},
@@ -290,13 +354,15 @@ func getResolution() string {
 		"1024x768  (XGA)",
 		"1280x720  (HD)",
 		"1920x1080 (Full HD)",
+		"2560x1440 (QHD)",
+		"3840x2160 (4K UHD)",
 		"Original  (Keep original resolution)",
 	}
 
 	prompt := promptui.Select{
 		Label:        "📐 Select output resolution",
 		Items:        resolutions,
-		Size:         8,
+		Size:         10,
 		HideSelected: true,
 		Templates: &promptui.SelectTemplates{
 			Label:    "{{ . }}",
@@ -321,6 +387,8 @@ func getResolution() string {
 		"1024x768",
 		"1280x720",
 		"1920x1080",
+		"2560x1440",
+		"3840x2160",
 		"Original",
 	}
 
@@ -329,12 +397,12 @@ func getResolution() string {
 
 func getOutputFormat() string {
 	formats := []string{
-		"GIF       (Graphics Interchange Format)",
-		"APNG      (Animated PNG)",
-		"WebP      (Google WebP)",
-		"AVIF      (AV1 Image File Format)",
-		"MP4       (MPEG-4 Video)",
-		"WebM      (WebM Video)",
+		"GIF       (Graphics Interchange Format - Animated)",
+		"APNG      (Animated PNG - Lossless)",
+		"WebP      (Google WebP - Modern, Efficient)",
+		"AVIF      (AV1 Image Format - Next-gen)",
+		"MP4       (MPEG-4 Video - Universal)",
+		"WebM      (WebM Video - Web Optimized)",
 	}
 
 	prompt := promptui.Select{
@@ -359,7 +427,43 @@ func getOutputFormat() string {
 	return SupportedOutputFormats[index]
 }
 
-func getQuality(outputFormat string) int {
+func getQualityProfile() string {
+	profiles := []string{
+		"High Quality  (Best visual quality, larger files)",
+		"Balanced      (Good quality, moderate file size)",
+		"Small Size    (Optimized for smaller files)",
+		"Custom        (Set quality manually)",
+	}
+
+	prompt := promptui.Select{
+		Label:        "⚡ Select quality profile",
+		Items:        profiles,
+		Size:         4,
+		HideSelected: true,
+		Templates: &promptui.SelectTemplates{
+			Label:    "{{ . }}",
+			Active:   "▶ {{ . | cyan | bold }}",
+			Inactive: "  {{ . | faint }}",
+			Selected: "{{ . | green | bold }}",
+		},
+	}
+
+	index, _, err := prompt.Run()
+	if err != nil {
+		fmt.Println(errorStyle.Render("❌ Operation cancelled"))
+		os.Exit(1)
+	}
+
+	profileMappings := []string{"high", "balanced", "small", "custom"}
+	return profileMappings[index]
+}
+
+func getQuality(outputFormat, qualityProfile string) int {
+	// If using a predefined profile, return 0 (will be handled by the profile system)
+	if qualityProfile != "custom" {
+		return 0
+	}
+
 	// Different quality ranges for different formats
 	var maxQuality int
 	var defaultQuality int
@@ -367,7 +471,9 @@ func getQuality(outputFormat string) int {
 
 	switch outputFormat {
 	case "GIF":
-		return 0 // GIF doesn't use quality setting
+		maxQuality = 256
+		defaultQuality = 128
+		qualityDesc = "GIF palette colors (16-256, higher = better quality)"
 	case "APNG":
 		return 0 // APNG doesn't use quality setting
 	case "WebP":
@@ -377,7 +483,7 @@ func getQuality(outputFormat string) int {
 	case "AVIF":
 		maxQuality = 63
 		defaultQuality = 30
-		qualityDesc = "AVIF quality (0-63, higher is better)"
+		qualityDesc = "AVIF CRF (0-63, lower is better quality)"
 	case "MP4", "WebM":
 		maxQuality = 51
 		defaultQuality = 23
@@ -397,8 +503,14 @@ func getQuality(outputFormat string) int {
 			if err != nil {
 				return fmt.Errorf("invalid number format")
 			}
-			if value < 0 || value > maxQuality {
-				return fmt.Errorf("quality must be between 0 and %d", maxQuality)
+			if outputFormat == "GIF" {
+				if value < 16 || value > maxQuality {
+					return fmt.Errorf("GIF colors must be between 16 and %d", maxQuality)
+				}
+			} else {
+				if value < 0 || value > maxQuality {
+					return fmt.Errorf("quality must be between 0 and %d", maxQuality)
+				}
 			}
 			return nil
 		},
@@ -500,14 +612,9 @@ func processOutputPath(input string) string {
 		return cleanedPath
 	}
 
-	// Check if the path exists and is a directory - if so, append output.gif
+	// Check if the path exists and is a directory - if so, append output filename
 	if stat, err := os.Stat(absPath); err == nil && stat.IsDir() {
-		return filepath.Join(absPath, "output."+strings.ToLower(filepath.Ext(absPath)))
-	}
-
-	// If it doesn't end with .gif, add .gif extension
-	if !strings.HasSuffix(strings.ToLower(absPath), "."+strings.ToLower(filepath.Ext(absPath))) {
-		absPath += "." + strings.ToLower(filepath.Ext(absPath))
+		return filepath.Join(absPath, "output")
 	}
 
 	return filepath.Clean(absPath)
@@ -560,10 +667,29 @@ func showConversionSummary(config *ConversionConfig, videoInfo *video.VideoInfo)
 	fmt.Printf("• Frame rate: %d fps\n", config.FrameRate)
 	fmt.Printf("• Resolution: %s\n", config.Resolution)
 
-	if config.Quality > 0 {
-		fmt.Printf("• Quality: %d\n", config.Quality)
+	// Display quality profile
+	if profile, exists := ffmpeg.QualityProfiles[config.QualityProfile]; exists {
+		fmt.Printf("• Quality profile: %s (%s)\n", profile.Name, profile.Description)
+	} else if config.QualityProfile == "custom" && config.Quality > 0 {
+		fmt.Printf("• Custom quality: %d\n", config.Quality)
 	}
 
 	estimatedFrames := int(duration * float64(config.FrameRate))
 	fmt.Printf("• Estimated frames: %d\n", estimatedFrames)
+
+	// Show format-specific optimizations
+	switch config.OutputFormat {
+	case "MP4":
+		fmt.Printf("• Codec: H.264 with web optimization\n")
+	case "WebM":
+		fmt.Printf("• Codec: VP9 with advanced compression\n")
+	case "AVIF":
+		fmt.Printf("• Codec: AV1 with next-generation compression\n")
+	case "WebP":
+		fmt.Printf("• Codec: WebP with animation support\n")
+	case "GIF":
+		fmt.Printf("• Optimization: Advanced palette generation\n")
+	case "APNG":
+		fmt.Printf("• Format: Lossless animated PNG\n")
+	}
 }

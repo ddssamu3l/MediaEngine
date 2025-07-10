@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"videotogif/internal/ffmpeg"
 )
 
 const (
@@ -14,8 +15,21 @@ const (
 	MaxFileSizeBytes = 500 * 1024 * 1024
 )
 
-// Add SupportedInputFormats to validation package
+// SupportedInputFormats defines all supported input video formats
 var SupportedInputFormats = []string{".mp4", ".mkv", ".mov", ".avi", ".webm", ".flv", ".wmv"}
+
+// FileValidationResult contains detailed validation results
+type FileValidationResult struct {
+	IsValid      bool
+	FileSize     int64
+	ActualFormat string
+	Duration     float64
+	HasVideo     bool
+	HasAudio     bool
+	Codec        string
+	Warnings     []string
+	Errors       []string
+}
 
 // getSystemDirectories returns platform-specific system directories to protect
 func getSystemDirectories() []string {
@@ -175,6 +189,119 @@ func ValidateInputPath(input string) error {
 	return nil
 }
 
+// ValidateInputPathComprehensive performs deep validation including content verification
+func ValidateInputPathComprehensive(input string) (*FileValidationResult, error) {
+	result := &FileValidationResult{
+		Warnings: make([]string, 0),
+		Errors:   make([]string, 0),
+	}
+
+	// First, run basic path validation
+	if err := ValidateInputPath(input); err != nil {
+		result.Errors = append(result.Errors, err.Error())
+		return result, err
+	}
+
+	// Clean path
+	cleanedPath := cleanPath(input)
+
+	// Get file info
+	fileInfo, err := os.Stat(cleanedPath)
+	if err != nil {
+		result.Errors = append(result.Errors, fmt.Sprintf("Cannot access file: %v", err))
+		return result, err
+	}
+
+	result.FileSize = fileInfo.Size()
+
+	// Use FFprobe for content validation
+	mediaInfo, err := ffmpeg.ValidateMediaFile(cleanedPath)
+	if err != nil {
+		result.Errors = append(result.Errors, fmt.Sprintf("Content validation failed: %v", err))
+		return result, fmt.Errorf("content validation failed: %v", err)
+	}
+
+	result.ActualFormat = mediaInfo.Format
+	result.Duration = mediaInfo.Duration
+	result.Codec = mediaInfo.Codec
+	result.HasVideo = mediaInfo.Valid
+
+	// Validate extension matches actual format
+	expectedExt := strings.ToLower(filepath.Ext(cleanedPath))
+	if !validateFormatConsistency(expectedExt, mediaInfo.Format) {
+		warning := fmt.Sprintf("File extension '%s' may not match actual format '%s'", expectedExt, mediaInfo.Format)
+		result.Warnings = append(result.Warnings, warning)
+	}
+
+	// Check for common issues
+	if mediaInfo.Duration <= 0 {
+		result.Errors = append(result.Errors, "Video has zero or invalid duration")
+		return result, fmt.Errorf("video has zero or invalid duration")
+	}
+
+	if mediaInfo.Duration < 0.1 {
+		result.Warnings = append(result.Warnings, "Video is very short (less than 0.1 seconds)")
+	}
+
+	if mediaInfo.Duration > 3600 { // 1 hour
+		result.Warnings = append(result.Warnings, "Video is very long (over 1 hour) - conversion may take significant time")
+	}
+
+	// Check for unusual characteristics
+	if result.FileSize > 100*1024*1024 { // 100MB
+		result.Warnings = append(result.Warnings, "Large file size - conversion may take significant time and memory")
+	}
+
+	result.IsValid = true
+	return result, nil
+}
+
+// validateFormatConsistency checks if file extension matches actual format
+func validateFormatConsistency(extension, actualFormat string) bool {
+	// Common format mappings
+	formatMappings := map[string][]string{
+		".mp4":  {"mp4", "mov,mp4,m4a,3gp,3g2,mj2"},
+		".mkv":  {"matroska,webm", "matroska"},
+		".mov":  {"mov,mp4,m4a,3gp,3g2,mj2", "mov"},
+		".avi":  {"avi"},
+		".webm": {"matroska,webm", "webm"},
+		".flv":  {"flv"},
+		".wmv":  {"asf", "wmv"},
+	}
+
+	if expectedFormats, exists := formatMappings[extension]; exists {
+		for _, expectedFormat := range expectedFormats {
+			if strings.Contains(actualFormat, expectedFormat) {
+				return true
+			}
+		}
+	}
+
+	return false
+}
+
+// cleanPath handles path cleaning and quote removal
+func cleanPath(input string) string {
+	cleanedPath := strings.TrimSpace(input)
+
+	// Remove surrounding quotes
+	if len(cleanedPath) >= 2 {
+		if (cleanedPath[0] == '\'' && cleanedPath[len(cleanedPath)-1] == '\'') ||
+			(cleanedPath[0] == '"' && cleanedPath[len(cleanedPath)-1] == '"') {
+			cleanedPath = cleanedPath[1 : len(cleanedPath)-1]
+		}
+	}
+
+	cleanedPath = strings.TrimSpace(cleanedPath)
+
+	// Convert to absolute path
+	if absPath, err := filepath.Abs(cleanedPath); err == nil {
+		return filepath.Clean(absPath)
+	}
+
+	return filepath.Clean(cleanedPath)
+}
+
 // ValidateOutputPathBasic performs basic validation during input prompt
 func ValidateOutputPathBasic(input string) error {
 	if strings.TrimSpace(input) == "" {
@@ -218,18 +345,12 @@ func ValidateOutputPathBasic(input string) error {
 		return err
 	}
 
-	// Check if it's an existing directory - this is valid, we'll append output.gif
+	// Check if it's an existing directory - this is valid, we'll append output file
 	if stat, err := os.Stat(cleanPath); err == nil && stat.IsDir() {
 		return nil // Directory is valid, we'll handle appending filename later
 	}
 
-	// If it's not an existing directory, treat it as a file path
-	// Ensure it will have .gif extension for validation purposes
-	if !strings.HasSuffix(strings.ToLower(cleanPath), ".gif") {
-		cleanPath += ".gif"
-	}
-
-	// Check if parent directory exists
+	// If it's not an existing directory, check if parent directory exists
 	parentDir := filepath.Dir(cleanPath)
 	if parentInfo, err := os.Stat(parentDir); err != nil {
 		if os.IsNotExist(err) {
@@ -282,12 +403,9 @@ func ValidateOutputPath(outputPath string) error {
 		return err
 	}
 
-	// Check if it's an existing directory - append output.gif
+	// Check if it's an existing directory - append output file
 	if stat, err := os.Stat(cleanPath); err == nil && stat.IsDir() {
-		cleanPath = filepath.Join(cleanPath, "output.gif")
-	} else if !strings.HasSuffix(strings.ToLower(cleanPath), ".gif") {
-		// If it's not a directory and doesn't end with .gif, add .gif extension
-		cleanPath += ".gif"
+		cleanPath = filepath.Join(cleanPath, "output")
 	}
 
 	// Check if file already exists
@@ -366,30 +484,6 @@ func validatePathSecurity(path string) error {
 		if strings.HasPrefix(normalizedPath, normalizedSysDir) {
 			return fmt.Errorf("cannot write to system directory: %s", sysDir)
 		}
-	}
-
-	return nil
-}
-
-// ValidateVideoFile performs additional validation specifically for video files
-func ValidateVideoFile(path string) error {
-	// Check if file can be opened for reading
-	file, err := os.Open(path)
-	if err != nil {
-		return fmt.Errorf("cannot open video file: %v", err)
-	}
-	defer file.Close()
-
-	// Read first few bytes to check if it looks like a valid MP4
-	header := make([]byte, 12)
-	n, err := file.Read(header)
-	if err != nil || n < 12 {
-		return fmt.Errorf("cannot read file header")
-	}
-
-	// Basic MP4 signature check (ftyp box)
-	if n >= 8 && string(header[4:8]) != "ftyp" {
-		return fmt.Errorf("file does not appear to be a valid MP4 video")
 	}
 
 	return nil

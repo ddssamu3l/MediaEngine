@@ -1,362 +1,132 @@
-# VideoToGIF
+# Universal Media Engine
 
-A robust, terminal-based CLI tool for converting MP4 videos to GIF with comprehensive validation, security features, and real-time progress tracking.
-
-## Features
-
-✨ **Comprehensive Input Validation**
-- MP4 file format verification
-- File size limits (500MB default)
-- Path security validation
-- Permission checks
-
-🎯 **Smart User Interface**
-- Arrow-key navigable resolution selection
-- Real-time FFmpeg progress tracking
-- Styled terminal UI with clear error messages
-- Conversion summary before processing
-
-🔒 **Security & Safety**
-- Directory traversal protection
-- System directory write protection
-- File permission validation
-- Path sanitization
-
-⚡ **Optimized Conversion**
-- High-quality GIF output with Lanczos scaling
-- Customizable frame rates (1-30 fps)
-- Multiple resolution presets
-- Efficient FFmpeg integration
+A terminal-based tool for converting videos to multiple formats (GIF, APNG, WebP, AVIF, MP4, WebM) with real-time progress tracking.
 
 ## Prerequisites
 
-### 1. Go Installation (Version 1.21 or later)
-
-**macOS:**
+### 1. Go (version 1.21 or later)
 ```bash
-# Using Homebrew
-brew install go
+# Check if Go is installed
+go version
 
-# Or download from official site
-curl -L https://golang.org/dl/go1.21.0.darwin-amd64.tar.gz -o go.tar.gz
-sudo tar -C /usr/local -xzf go.tar.gz
-echo 'export PATH=$PATH:/usr/local/go/bin' >> ~/.zshrc
-source ~/.zshrc
+# Install Go if needed:
+# macOS: brew install go
+# Ubuntu: sudo apt install golang-go
+# Windows: Download from https://golang.org/download.html
 ```
 
-**Ubuntu/Debian:**
+### 2. FFmpeg and FFprobe
+Both tools are required for media processing and validation:
+
 ```bash
-# Using package manager
-sudo apt update
-sudo apt install golang-go
-
-# Or install latest version manually
-wget https://golang.org/dl/go1.21.0.linux-amd64.tar.gz
-sudo tar -C /usr/local -xzf go1.21.0.linux-amd64.tar.gz
-echo 'export PATH=$PATH:/usr/local/go/bin' >> ~/.bashrc
-source ~/.bashrc
-```
-
-**Windows:**
-1. Download installer from https://golang.org/dl/
-2. Run the MSI installer
-3. Go will be automatically added to PATH
-
-### 2. FFmpeg Installation
-
-**macOS:**
-```bash
-# Using Homebrew (recommended)
+# macOS
 brew install ffmpeg
 
-# Using MacPorts
-sudo port install ffmpeg
-```
-
-**Ubuntu/Debian:**
-```bash
+# Ubuntu/Debian
 sudo apt update
 sudo apt install ffmpeg
+
+# Windows (with Chocolatey)
+choco install ffmpeg
+
+# Or download from: https://ffmpeg.org/download.html
 ```
 
-**CentOS/RHEL/Rocky Linux:**
+Verify installation:
 ```bash
-# Enable EPEL repository first
-sudo dnf install epel-release
-sudo dnf install ffmpeg ffmpeg-devel
-```
-
-**Windows:**
-1. Download from https://ffmpeg.org/download.html#build-windows
-2. Extract to `C:\ffmpeg`
-3. Add `C:\ffmpeg\bin` to your system PATH:
-   - Open System Properties → Advanced → Environment Variables
-   - Edit the PATH variable and add `C:\ffmpeg\bin`
-   - Restart terminal/command prompt
-
-**Arch Linux:**
-```bash
-sudo pacman -S ffmpeg
+ffmpeg -version
+ffprobe -version
 ```
 
 ## Installation
 
-### Method 1: Build from Source
-
 1. **Clone the repository:**
 ```bash
 git clone <repository-url>
-cd videotogif
+cd VideoToGIF
 ```
 
-2. **Install dependencies:**
+2. **Install Go dependencies:**
 ```bash
 go mod tidy
 ```
 
 3. **Build the application:**
 ```bash
-go build -o videotogif .
+go build -tags sqlite_fts5 .
 ```
-
-4. **Test the installation:**
-```bash
-./videotogif
-```
-
-### Method 2: System-wide Installation
-
-After building the application, install it system-wide:
-
-**macOS/Linux:**
-```bash
-# Build the binary
-go build -o videotogif .
-
-# Install to system location
-sudo cp videotogif /usr/local/bin/
-
-# Make sure /usr/local/bin is in your PATH
-echo 'export PATH=/usr/local/bin:$PATH' >> ~/.bashrc  # or ~/.zshrc
-source ~/.bashrc  # or source ~/.zshrc
-
-# Verify installation
-which videotogif
-videotogif --version
-```
-
-**Windows:**
-```cmd
-# Build the binary
-go build -o videotogif.exe .
-
-# Create a tools directory (if it doesn't exist)
-mkdir C:\tools
-
-# Copy the executable
-copy videotogif.exe C:\tools\
-
-# Add C:\tools to your PATH:
-# 1. Open System Properties → Advanced → Environment Variables
-# 2. Edit the PATH variable and add C:\tools
-# 3. Open a new command prompt and test:
-videotogif
-```
-
-### Method 3: Go Install (Direct)
-
-```bash
-# Install directly from source
-go install github.com/youruser/videotogif@latest
-
-# The binary will be installed to $GOPATH/bin or $HOME/go/bin
-# Make sure this directory is in your PATH
-```
-
-## Global Installation
-
-To install `videotogif` globally so you can run it from anywhere on your system:
-
-### **🚀 Quick Install (Recommended)**
-
-Use the provided installation script:
-
-```bash
-# Make the script executable and run it
-chmod +x install.sh
-./install.sh
-
-# Or with specific options:
-./install.sh --user      # Install to ~/.local/bin (no sudo)
-./install.sh --system    # Install to /usr/local/bin (requires sudo)
-./install.sh --help      # Show all options
-```
-
-### **📋 Manual Installation Options**
-
-**Option 1: System-wide installation**
-```bash
-go build -o videotogif .
-sudo cp videotogif /usr/local/bin/
-```
-
-**Option 2: User installation (no sudo)**
-```bash
-# Create local bin directory
-mkdir -p ~/.local/bin
-
-# Build and install
-go build -o videotogif .
-cp videotogif ~/.local/bin/
-
-# Add to PATH (if not already added)
-echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.zshrc
-source ~/.zshrc
-```
-
-**Option 3: Homebrew directory**
-```bash
-go build -o videotogif .
-sudo cp videotogif /opt/homebrew/bin/
-```
-
-### **✅ Verify Installation**
-
-After installation, verify it works:
-```bash
-# Check if videotogif is in PATH
-which videotogif
-
-# Test the installation
-videotogif
-```
-
-You should now be able to run `videotogif` from any directory!
-
-## Cross-Platform Builds
-
-Build for different platforms with full cross-platform path validation:
-
-```bash
-# Windows 64-bit
-GOOS=windows GOARCH=amd64 go build -o videotogif-windows.exe .
-
-# macOS (Intel)
-GOOS=darwin GOARCH=amd64 go build -o videotogif-macos-intel .
-
-# macOS (Apple Silicon)
-GOOS=darwin GOARCH=arm64 go build -o videotogif-macos-arm .
-
-# Linux 64-bit
-GOOS=linux GOARCH=amd64 go build -o videotogif-linux .
-
-# Linux ARM64 (Raspberry Pi)
-GOOS=linux GOARCH=arm64 go build -o videotogif-linux-arm64 .
-```
-
-### Platform-Specific Features
-
-**Path Validation:**
-- **Windows**: Validates against reserved names (CON, PRN, AUX, etc.) and invalid characters (`< > : " | ? *`)
-- **macOS**: Protects system directories (`/System`, `/Applications`, etc.)
-- **Linux**: Protects system directories (`/etc`, `/usr`, `/bin`, etc.)
-
-**Path Length Limits:**
-- **Windows**: 260 characters (classic MAX_PATH)
-- **macOS**: 1024 characters
-- **Linux**: 4096 characters (PATH_MAX)
-
-**Case Sensitivity:**
-- **Windows**: Case-insensitive path comparison
-- **macOS/Linux**: Case-sensitive path comparison
-
-**Directory Separators:**
-- Automatically handled by Go's `filepath` package across all platforms
 
 ## Usage
 
-### Basic Usage
-
-1. **Run the tool:**
+### Run the application:
 ```bash
-videotogif
+# Option 1: Run directly
+go run -tags sqlite_fts5 .
+
+# Option 2: Use built binary
+./VideoToGIF
 ```
 
-2. **Follow the interactive prompts:**
-   - Enter path to your MP4 video file
-   - Review the displayed video information
-   - Set start time, end time, and frame rate
-   - Select output resolution using arrow keys
-   - Specify output path for the GIF
-   - Confirm conversion settings
-   - Watch real-time progress
+### Interactive workflow:
+1. Enter path to your video file
+2. Select output format (GIF, APNG, WebP, AVIF, MP4, WebM)
+3. Choose quality profile or set custom quality
+4. Set time range (start/end times)
+5. Choose frame rate and resolution
+6. Specify output path
+7. Watch real-time conversion progress
 
-### Command Line Examples
+### Supported formats:
+- **Input**: MP4, MKV, MOV, AVI, WebM, FLV, WMV
+- **Output**: GIF, APNG, WebP, AVIF, MP4, WebM
 
-The tool currently operates in interactive mode. Future versions may include command-line arguments.
+## Dependencies
 
-## Features in Detail
-
-### Input Validation
-- Validates MP4 file format and integrity
-- Checks file permissions and accessibility
-- Enforces file size limits (500MB default)
-- Prevents directory traversal attacks
-
-### Security Features
-- Path sanitization and cleaning
-- System directory protection
-- Write permission verification
-- Input validation against malicious paths
-
-### Progress Tracking
-- Real-time FFmpeg progress parsing
-- Frame-accurate progress reporting
-- Time estimation and elapsed time display
-- Visual progress bar with completion percentage
-
-### Output Quality
-- Lanczos scaling for high-quality resizing
-- Optimized GIF encoding parameters
-- Customizable frame rates (1-30 fps)
-- Multiple resolution presets
+The project uses these Go modules:
+- `github.com/charmbracelet/lipgloss` - Terminal styling
+- `github.com/manifoldco/promptui` - Interactive prompts  
+- `github.com/schollz/progressbar/v3` - Progress tracking
 
 ## Troubleshooting
 
-### Common Issues
+### Common issues:
 
-**"FFmpeg not found" error:**
-- Verify FFmpeg installation: `ffmpeg -version`
-- Check PATH configuration
-- Reinstall FFmpeg if necessary
+**FFmpeg not found:**
+```
+❌ FFmpeg or FFprobe is not installed or not in PATH
+```
+- Install FFmpeg and ensure both `ffmpeg` and `ffprobe` are in your PATH
 
-**Permission denied errors:**
-- Check file read permissions for input video
-- Verify write permissions for output directory
-- Run with appropriate user privileges
+**Permission denied:**
+- Check read permissions on input file
+- Check write permissions on output directory
 
-**File format errors:**
-- Ensure input file is a valid MP4
-- Check if file is corrupted
-- Try a different input file
+**Codec not available:**
+```
+❌ The AVIF format encoder is not available
+```
+- Install FFmpeg with full codec support, or choose a different output format
 
-**Memory issues with large files:**
-- Use files smaller than 500MB
-- Consider reducing resolution or frame rate
-- Close other applications to free memory
+**Build errors:**
+- Ensure Go 1.21+ is installed: `go version`
+- Run `go mod tidy` to update dependencies
+- Use the sqlite_fts5 build tag: `go build -tags sqlite_fts5 .`
 
-### Getting Help
+## Development
 
-If you encounter issues:
-1. Check the error message for specific guidance
-2. Verify all prerequisites are installed
-3. Test with a small, simple MP4 file
-4. Check file and directory permissions
+Run tests:
+```bash
+go test ./...
+```
 
-## License
+Build for different platforms:
+```bash
+# Windows
+GOOS=windows GOARCH=amd64 go build -tags sqlite_fts5 -o VideoToGIF.exe .
 
-[Your License Here]
+# macOS
+GOOS=darwin GOARCH=amd64 go build -tags sqlite_fts5 -o VideoToGIF-macos .
 
-## Contributing
-
-[Contributing Guidelines Here]
+# Linux
+GOOS=linux GOARCH=amd64 go build -tags sqlite_fts5 -o VideoToGIF-linux .
+```
