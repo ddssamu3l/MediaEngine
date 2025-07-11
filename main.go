@@ -10,6 +10,7 @@ import (
 
 	"videotogif/internal/ffmpeg"
 	"videotogif/internal/ui"
+	"videotogif/internal/upscaling"
 	"videotogif/internal/validation"
 	"videotogif/internal/video"
 
@@ -62,6 +63,10 @@ type ConversionConfig struct {
 	Resolution     string
 	Quality        int
 	QualityProfile string
+	// Add upscaling configuration
+	UseUpscaling   bool
+	UpscalingModel string
+	UpscalingScale int
 }
 
 func main() {
@@ -114,6 +119,10 @@ func main() {
 	config.EndTime = getEndTime(videoInfo.Duration, config.StartTime)
 	config.FrameRate = getFrameRate()
 	config.Resolution = getResolution()
+
+	// Add upscaling preferences
+	config.UseUpscaling, config.UpscalingModel, config.UpscalingScale = getUpscalingPreferences()
+
 	config.Quality = getQuality(config.OutputFormat, config.QualityProfile)
 	config.OutputPath = getOutputPath(config.OutputFormat)
 
@@ -395,6 +404,53 @@ func getResolution() string {
 	return resolutionMappings[index]
 }
 
+// Add new function to get upscaling preferences
+func getUpscalingPreferences() (bool, string, int) {
+	// Check if upscaling is available
+	upscaler := upscaling.NewUpscaler(upscaling.GetDefaultConfig())
+	if !upscaler.IsAvailable() {
+		fmt.Println(warningStyle.Render("⚠️  AI Upscaling not available (Real-ESRGAN not installed)"))
+		return false, "", 0
+	}
+
+	// Ask if user wants to use upscaling
+	useUpscaling := confirmProceed("🚀 Enable AI upscaling? (y/N): ", false)
+	if !useUpscaling {
+		return false, "", 0
+	}
+
+	// Get upscaling model
+	models := []string{
+		"General Purpose 4x (Best for photos/real content)",
+		"General Purpose 2x (Faster, good quality)",
+		"Anime/Cartoon 4x (Optimized for animated content)",
+	}
+
+	prompt := promptui.Select{
+		Label:        "🎯 Select AI upscaling model",
+		Items:        models,
+		Size:         3,
+		HideSelected: true,
+		Templates: &promptui.SelectTemplates{
+			Label:    "{{ . }}",
+			Active:   "▶ {{ . | cyan | bold }}",
+			Inactive: "  {{ . | faint }}",
+			Selected: "{{ . | green | bold }}",
+		},
+	}
+
+	index, _, err := prompt.Run()
+	if err != nil {
+		fmt.Println(errorStyle.Render("❌ Operation cancelled"))
+		os.Exit(1)
+	}
+
+	modelMappings := []string{"general_4x", "general_2x", "anime_4x"}
+	scaleMappings := []int{4, 2, 4}
+
+	return true, modelMappings[index], scaleMappings[index]
+}
+
 func getOutputFormat() string {
 	formats := []string{
 		"GIF       (Graphics Interchange Format - Animated)",
@@ -666,6 +722,14 @@ func showConversionSummary(config *ConversionConfig, videoInfo *video.VideoInfo)
 		ui.FormatDuration(duration), config.StartTime, config.EndTime)
 	fmt.Printf("• Frame rate: %d fps\n", config.FrameRate)
 	fmt.Printf("• Resolution: %s\n", config.Resolution)
+
+	// Add upscaling info
+	if config.UseUpscaling {
+		fmt.Printf("• AI Upscaling: %s (%dx)\n",
+			upscaling.UpscalingModelDescriptions[config.UpscalingModel],
+			config.UpscalingScale)
+		fmt.Printf("• Final resolution will be %dx larger\n", config.UpscalingScale)
+	}
 
 	// Display quality profile
 	if profile, exists := ffmpeg.QualityProfiles[config.QualityProfile]; exists {
