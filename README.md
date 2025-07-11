@@ -40,20 +40,14 @@ ffprobe -version
 
 ## Installation
 
-1. **Clone the repository:**
-```bash
-git clone <repository-url>
-cd VideoToGIF
-```
-
-2. **Install Go dependencies:**
+1. **Install Go dependencies:**
 ```bash
 go mod tidy
 ```
 
-3. **Build the application:**
+2. **Build the application:**
 ```bash
-go build -tags sqlite_fts5 .
+go build .
 ```
 
 ## Usage
@@ -61,10 +55,10 @@ go build -tags sqlite_fts5 .
 ### Run the application:
 ```bash
 # Option 1: Run directly
-go run -tags sqlite_fts5 .
+go run .
 
 # Option 2: Use built binary
-./VideoToGIF
+./mediaengine
 ```
 
 ### Interactive workflow:
