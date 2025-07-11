@@ -116,11 +116,11 @@ go test ./...
 Build for different platforms:
 ```bash
 # Windows
-GOOS=windows GOARCH=amd64 go build -tags sqlite_fts5 -o VideoToGIF.exe .
+GOOS=windows GOARCH=amd64 go build -o mediaengine.exe .
 
 # macOS
-GOOS=darwin GOARCH=amd64 go build -tags sqlite_fts5 -o VideoToGIF-macos .
+GOOS=darwin GOARCH=amd64 go build -o mediaengine-macos .
 
 # Linux
-GOOS=linux GOARCH=amd64 go build -tags sqlite_fts5 -o VideoToGIF-linux .
+GOOS=linux GOARCH=amd64 go build -o mediaengine-linux .
 ```

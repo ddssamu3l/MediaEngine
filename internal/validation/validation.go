@@ -438,13 +438,13 @@ func ValidateOutputPath(outputPath string) error {
 // checkWritePermission tests if we can write to a file or directory
 func checkWritePermission(path string) error {
 	// Try to create a temporary file to test write permissions
-	tempFile := filepath.Join(path, ".videotogif_write_test")
+	tempFile := filepath.Join(path, ".mediaengine_write_test")
 	if _, err := os.Stat(path); err != nil {
 		// If path is a file, check its directory
 		if !os.IsNotExist(err) {
 			return err
 		}
-		tempFile = filepath.Join(filepath.Dir(path), ".videotogif_write_test")
+		tempFile = filepath.Join(filepath.Dir(path), ".mediaengine_write_test")
 	}
 
 	file, err := os.Create(tempFile)
