@@ -9,11 +9,11 @@ import (
 	"strings"
 	"time"
 
-	"videotogif/internal/ffmpeg"
-	"videotogif/internal/ui"
-	"videotogif/internal/upscaling"
-	"videotogif/internal/validation"
-	"videotogif/internal/video"
+	"mediaengine/internal/ffmpeg"
+	"mediaengine/internal/ui"
+	"mediaengine/internal/upscaling"
+	"mediaengine/internal/validation"
+	"mediaengine/internal/video"
 
 	"github.com/charmbracelet/lipgloss"
 	"github.com/manifoldco/promptui"

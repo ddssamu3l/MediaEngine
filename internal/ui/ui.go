@@ -4,7 +4,8 @@ package ui
 import (
 	"fmt"
 	"path/filepath"
-	"videotogif/internal/video"
+
+	"mediaengine/internal/video"
 
 	"github.com/charmbracelet/lipgloss"
 )

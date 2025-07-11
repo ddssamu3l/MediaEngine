@@ -7,7 +7,8 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
-	"videotogif/internal/ffmpeg"
+
+	"mediaengine/internal/ffmpeg"
 )
 
 const (

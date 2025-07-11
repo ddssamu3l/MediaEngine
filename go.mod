@@ -1,4 +1,4 @@
-module videotogif
+module mediaengine
 
 go 1.21
 
