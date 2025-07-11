@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 
 	"videotogif/internal/ffmpeg"
 	"videotogif/internal/ui"
@@ -136,7 +137,74 @@ func main() {
 	// Perform conversion with progress tracking
 	fmt.Println("\n" + promptStyle.Render("🔄 Starting conversion..."))
 
-	err = ffmpeg.ConvertMediaWithProgress(config.InputPath, config.OutputPath, config.OutputFormat,
+	var conversionInputPath = config.InputPath
+
+	// AI Upscaling phase (if enabled)
+	if config.UseUpscaling {
+		fmt.Println("🚀 AI Upscaling enabled - this will take longer but provide better quality")
+
+		// Set up upscaling configuration
+		upscalingConfig := upscaling.GetDefaultConfig()
+		upscalingConfig.Enabled = true
+		upscalingConfig.Model = config.UpscalingModel
+		upscalingConfig.Scale = config.UpscalingScale
+
+		// Validate upscaling configuration
+		if err := upscaling.ValidateConfig(upscalingConfig); err != nil {
+			fmt.Println(errorStyle.Render(fmt.Sprintf("❌ Upscaling configuration error: %v", err)))
+			fmt.Println("⚠️  Continuing with standard conversion...")
+		} else {
+			// Create upscaler
+			upscaler := upscaling.NewUpscaler(upscalingConfig)
+
+			// Create temporary upscaled video path
+			tempDir := os.TempDir()
+			upscaledVideoPath := filepath.Join(tempDir, fmt.Sprintf("upscaled_%d.mp4", time.Now().Unix()))
+
+			// Ensure cleanup of temporary file
+			defer func() {
+				if _, err := os.Stat(upscaledVideoPath); err == nil {
+					if removeErr := os.Remove(upscaledVideoPath); removeErr != nil {
+						fmt.Printf("Warning: failed to clean up temporary file %s: %v\n", upscaledVideoPath, removeErr)
+					}
+				}
+			}()
+
+			// Create progress callback for upscaling
+			progressCallback := func(current, total int, message string) {
+				if current == total {
+					fmt.Printf("\r✅ %s\n", message)
+				} else {
+					fmt.Printf("\r🔄 [%d%%] %s", current, message)
+				}
+			}
+
+			// Perform AI upscaling
+			fmt.Println("🎯 Starting AI upscaling process...")
+			upscalingResult, err := upscaler.UpscaleVideo(config.InputPath, upscaledVideoPath, progressCallback)
+
+			if err != nil {
+				fmt.Println(errorStyle.Render(fmt.Sprintf("❌ AI upscaling failed: %v", err)))
+				fmt.Println("⚠️  Falling back to standard conversion...")
+			} else if upscalingResult.Success {
+				fmt.Println(successStyle.Render("✅ AI upscaling completed successfully!"))
+				fmt.Printf("📈 Upscaled from %dx%d to %dx%d (%d frames processed in %v)\n",
+					upscalingResult.OriginalSize.Width, upscalingResult.OriginalSize.Height,
+					upscalingResult.UpscaledSize.Width, upscalingResult.UpscaledSize.Height,
+					upscalingResult.FramesProcessed, upscalingResult.ProcessingTime.Round(time.Second))
+
+				// Use upscaled video as input for format conversion
+				conversionInputPath = upscaledVideoPath
+				fmt.Println("🔄 Converting upscaled video to final format...")
+			} else {
+				fmt.Println(errorStyle.Render("❌ AI upscaling completed but was not successful"))
+				fmt.Println("⚠️  Falling back to standard conversion...")
+			}
+		}
+	}
+
+	// Regular format conversion phase
+	err = ffmpeg.ConvertMediaWithProgress(conversionInputPath, config.OutputPath, config.OutputFormat,
 		config.StartTime, config.EndTime, config.FrameRate, config.Quality, config.Resolution, config.QualityProfile)
 
 	if err != nil {
