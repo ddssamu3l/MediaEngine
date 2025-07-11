@@ -32,12 +32,14 @@ func DisplayVideoInfo(info *video.VideoInfo) {
 			"%s %s\n"+
 			"%s %dx%d\n"+
 			"%s %s\n"+
+			"%s %.1f fps\n"+
 			"%s %s\n"+
 			"%s %s",
 		labelStyle.Render("📁 File:"), valueStyle.Render(filepath.Base(info.Filepath)),
 		labelStyle.Render("📊 Size:"), valueStyle.Render(FormatFileSize(info.FileSize)),
 		labelStyle.Render("📐 Dimensions:"), info.Width, info.Height,
 		labelStyle.Render("🎬 Format:"), valueStyle.Render(info.Format),
+		labelStyle.Render("🎞️  Frame Rate:"), info.FrameRate,
 		labelStyle.Render("⚡ Bitrate:"), valueStyle.Render(formatBitrate(info.Bitrate)),
 		labelStyle.Render("⏱️  Duration:"), valueStyle.Render(FormatDuration(info.Duration)),
 	)

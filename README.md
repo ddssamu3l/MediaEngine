@@ -38,6 +38,23 @@ ffmpeg -version
 ffprobe -version
 ```
 
+### 3. Python (for AI Upscaling - Optional)
+AI upscaling requires Python 3.7+ with PyTorch:
+
+```bash
+# Create virtual environment (recommended)
+python3 -m venv realesrgan_env
+source realesrgan_env/bin/activate  # Linux/macOS
+# or
+realesrgan_env\Scripts\activate     # Windows
+
+# Install required packages
+pip install torch torchvision opencv-python numpy
+
+# Optional: Install Real-ESRGAN for best quality
+pip install realesrgan basicsr
+```
+
 ## Installation
 
 1. **Install Go dependencies:**
@@ -45,7 +62,26 @@ ffprobe -version
 go mod tidy
 ```
 
-2. **Build the application:**
+2. **Set up AI models (optional):**
+If you want to use AI upscaling, create a `models` directory and download the model files:
+```bash
+mkdir models
+cd models
+
+# Download Real-ESRGAN models (optional, for best quality)
+# General purpose 4x model (~64MB)
+curl -L -o RealESRGAN_x4plus.pth https://github.com/xinntao/Real-ESRGAN/releases/download/v0.1.0/RealESRGAN_x4plus.pth
+
+# General purpose 2x model (~64MB)  
+curl -L -o RealESRGAN_x2plus.pth https://github.com/xinntao/Real-ESRGAN/releases/download/v0.2.1/RealESRGAN_x2plus.pth
+
+# Anime/cartoon optimized model (~17MB)
+curl -L -o RealESRGAN_x4plus_anime_6B.pth https://github.com/xinntao/Real-ESRGAN/releases/download/v0.2.2.4/RealESRGAN_x4plus_anime_6B.pth
+
+cd ..
+```
+
+3. **Build the application:**
 ```bash
 go build .
 ```
@@ -66,13 +102,24 @@ go run .
 2. Select output format (GIF, APNG, WebP, AVIF, MP4, WebM)
 3. Choose quality profile or set custom quality
 4. Set time range (start/end times)
-5. Choose frame rate and resolution
-6. Specify output path
-7. Watch real-time conversion progress
+5. Choose frame rate
+6. **Select AI scaling option:**
+   - Keep Original Resolution (no AI processing)
+   - Upscale - Enhance quality (2x, 4x with neural networks)
+   - Downscale - Reduce quality (1/2x, 1/4x, 1/8x)
+7. Specify output path
+8. Watch real-time conversion progress with GPU acceleration
 
 ### Supported formats:
 - **Input**: MP4, MKV, MOV, AVI, WebM, FLV, WMV
 - **Output**: GIF, APNG, WebP, AVIF, MP4, WebM
+
+### AI Upscaling Features:
+- **GPU Acceleration**: Supports Apple Silicon (MPS), NVIDIA CUDA, and CPU fallback
+- **Multiple Models**: General purpose (2x, 4x) and anime-optimized (4x) models
+- **Quality Preservation**: Maintains exact aspect ratios during scaling
+- **Downscaling**: Intelligent quality reduction for smaller file sizes
+- **Progress Tracking**: Real-time GPU utilization and processing status
 
 ## Dependencies
 
@@ -104,7 +151,24 @@ The project uses these Go modules:
 **Build errors:**
 - Ensure Go 1.21+ is installed: `go version`
 - Run `go mod tidy` to update dependencies
-- Use the sqlite_fts5 build tag: `go build -tags sqlite_fts5 .`
+
+**AI Upscaling not available:**
+```
+⚠️ AI Scaling not available (Real-ESRGAN not installed)
+```
+- Install Python 3.7+ and required packages (see Prerequisites section)
+- Download model files to the `models/` directory (see Installation section)
+- Ensure virtual environment is activated if using one
+
+**GPU acceleration issues:**
+- **Apple Silicon**: Install PyTorch with MPS support: `pip install torch torchvision`
+- **NVIDIA GPU**: Install PyTorch with CUDA support: `pip install torch torchvision --index-url https://download.pytorch.org/whl/cu118`
+- **CPU fallback**: The system will automatically use CPU if GPU is unavailable
+
+**Python environment issues:**
+- Check Python version: `python3 --version` (must be 3.7+)
+- Verify PyTorch installation: `python3 -c "import torch; print(torch.__version__)"`
+- Check GPU availability: `python3 -c "import torch; print(torch.backends.mps.is_available())"`
 
 ## Development
 

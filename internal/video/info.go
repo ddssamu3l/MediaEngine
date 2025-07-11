@@ -7,24 +7,28 @@ import (
 	"os"
 	"os/exec"
 	"strconv"
+	"strings"
 )
 
 type VideoInfo struct {
-	Filepath string
-	FileSize int64
-	Width    int
-	Height   int
-	Duration float64
-	Format   string
-	Bitrate  int64
+	Filepath  string
+	FileSize  int64
+	Width     int
+	Height    int
+	Duration  float64
+	Format    string
+	Bitrate   int64
+	FrameRate float64
 }
 
 type FFProbeOutput struct {
 	Streams []struct {
-		Width     int    `json:"width"`
-		Height    int    `json:"height"`
-		Duration  string `json:"duration"`
-		CodecType string `json:"codec_type"`
+		Width        int    `json:"width"`
+		Height       int    `json:"height"`
+		Duration     string `json:"duration"`
+		CodecType    string `json:"codec_type"`
+		RFrameRate   string `json:"r_frame_rate"`
+		AvgFrameRate string `json:"avg_frame_rate"`
 	} `json:"streams"`
 	Format struct {
 		Duration string `json:"duration"`
@@ -63,6 +67,15 @@ func GetVideoInfo(filepath string) (*VideoInfo, error) {
 		if stream.CodecType == "video" {
 			info.Width = stream.Width
 			info.Height = stream.Height
+
+			// Parse frame rate
+			if frameRate := parseFrameRate(stream.RFrameRate); frameRate > 0 {
+				info.FrameRate = frameRate
+			} else if frameRate := parseFrameRate(stream.AvgFrameRate); frameRate > 0 {
+				info.FrameRate = frameRate
+			} else {
+				info.FrameRate = 30.0 // Default fallback
+			}
 			break
 		}
 	}
@@ -82,4 +95,30 @@ func GetVideoInfo(filepath string) (*VideoInfo, error) {
 	}
 
 	return info, nil
+}
+
+// parseFrameRate parses frame rate from FFprobe format (e.g., "30/1" or "30000/1001")
+func parseFrameRate(frameRateStr string) float64 {
+	if frameRateStr == "" || frameRateStr == "0/0" {
+		return 0
+	}
+
+	// Handle fractional frame rates like "30000/1001"
+	if strings.Contains(frameRateStr, "/") {
+		parts := strings.Split(frameRateStr, "/")
+		if len(parts) == 2 {
+			numerator, err1 := strconv.ParseFloat(parts[0], 64)
+			denominator, err2 := strconv.ParseFloat(parts[1], 64)
+			if err1 == nil && err2 == nil && denominator != 0 {
+				return numerator / denominator
+			}
+		}
+	} else {
+		// Handle simple numeric frame rates
+		if rate, err := strconv.ParseFloat(frameRateStr, 64); err == nil {
+			return rate
+		}
+	}
+
+	return 0
 }

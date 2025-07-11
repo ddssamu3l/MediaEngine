@@ -13,16 +13,17 @@ import (
 	"time"
 )
 
-// UpscalingConfig holds configuration for AI upscaling
+// UpscalingConfig holds configuration for AI scaling (both upscaling and downscaling)
 type UpscalingConfig struct {
-	Enabled    bool
-	Model      string // RealESRGAN_x4plus, RealESRGAN_x2plus, RealESRGAN_x4plus_anime_6B
-	Scale      int    // 2, 3, or 4
-	UseGPU     bool
-	GPUDevice  int
-	PythonPath string
-	ScriptPath string
-	TempDir    string
+	Enabled      bool
+	Model        string // RealESRGAN_x4plus, RealESRGAN_x2plus, RealESRGAN_x4plus_anime_6B
+	Scale        int    // Positive for upscaling (2, 3, 4), negative for downscaling (-2, -4, -8)
+	UseGPU       bool
+	GPUDevice    int
+	PythonPath   string
+	ScriptPath   string
+	TempDir      string
+	IsDownscale  bool   // True if scale is negative
 }
 
 // VideoUpscalingResult contains the results of video upscaling
@@ -93,15 +94,27 @@ func (u *Upscaler) IsAvailable() bool {
 		return false
 	}
 
-	// Test if realesrgan package is available
-	cmd := exec.Command(u.config.PythonPath, "-c", "import realesrgan; print('OK')")
+	// Test if our direct implementation dependencies are available
+	cmd := exec.Command(u.config.PythonPath, "-c", "import torch; import cv2; import numpy; print('OK')")
 	output, err := cmd.Output()
 	if err != nil {
 		return false
 	}
 
-	// Check if output contains "OK" (our demo module prints additional messages)
-	return strings.Contains(string(output), "OK")
+	// Check if models directory exists
+	if _, err := os.Stat("models"); os.IsNotExist(err) {
+		return false
+	}
+
+	// Check if at least one model exists
+	modelFiles := []string{"models/RealESRGAN_x4plus.pth", "models/RealESRGAN_x2plus.pth", "models/RealESRGAN_x4plus_anime_6B.pth"}
+	for _, modelPath := range modelFiles {
+		if _, err := os.Stat(modelPath); err == nil {
+			return strings.Contains(string(output), "OK")
+		}
+	}
+
+	return false
 }
 
 // EstimateMemoryUsage estimates memory requirements for video upscaling
@@ -116,7 +129,16 @@ func (u *Upscaler) EstimateMemoryUsage(width, height int) (*MemoryEstimate, erro
 
 	// Calculate image memory usage
 	inputMemory := float64(width * height * 3 * dtypeSize)
-	outputMemory := float64((width * u.config.Scale) * (height * u.config.Scale) * 3 * dtypeSize)
+	
+	var outputMemory float64
+	if u.config.Scale > 0 {
+		// Upscaling
+		outputMemory = float64((width * u.config.Scale) * (height * u.config.Scale) * 3 * dtypeSize)
+	} else {
+		// Downscaling
+		divisor := -u.config.Scale
+		outputMemory = float64((width / divisor) * (height / divisor) * 3 * dtypeSize)
+	}
 
 	// Total memory estimation
 	totalMemory := (inputMemory + outputMemory + modelMemoryGB*1024*1024*1024) * overheadFactor
@@ -179,8 +201,8 @@ func (u *Upscaler) GetVideoInfo(videoPath string) (*VideoSize, int, error) {
 }
 
 // UpscaleVideo processes an entire video with AI upscaling
-func (u *Upscaler) UpscaleVideo(inputPath, outputPath string, progressCallback ProgressCallback) (*VideoUpscalingResult, error) {
-	startTime := time.Now()
+func (u *Upscaler) UpscaleVideo(inputPath, outputPath string, startTime, endTime float64, frameRate int, progressCallback ProgressCallback) (*VideoUpscalingResult, error) {
+	processingStartTime := time.Now()
 	result := &VideoUpscalingResult{
 		InputPath:  inputPath,
 		OutputPath: outputPath,
@@ -205,9 +227,21 @@ func (u *Upscaler) UpscaleVideo(inputPath, outputPath string, progressCallback P
 	}
 
 	result.OriginalSize = *videoSize
-	result.UpscaledSize = VideoSize{
-		Width:  videoSize.Width * u.config.Scale,
-		Height: videoSize.Height * u.config.Scale,
+	
+	// Calculate output size based on scaling mode
+	if u.config.Scale > 0 {
+		// Upscaling
+		result.UpscaledSize = VideoSize{
+			Width:  videoSize.Width * u.config.Scale,
+			Height: videoSize.Height * u.config.Scale,
+		}
+	} else {
+		// Downscaling (scale is negative)
+		divisor := -u.config.Scale
+		result.UpscaledSize = VideoSize{
+			Width:  videoSize.Width / divisor,
+			Height: videoSize.Height / divisor,
+		}
 	}
 
 	// Estimate memory usage
@@ -252,7 +286,15 @@ func (u *Upscaler) UpscaleVideo(inputPath, outputPath string, progressCallback P
 	}
 
 	framePattern := filepath.Join(framesDir, "frame_%06d.png")
-	extractCmd := exec.Command("ffmpeg", "-i", inputPath, "-y", framePattern)
+	
+	// Build ffmpeg command with time range and frame rate constraints
+	extractCmd := exec.Command("ffmpeg", 
+		"-i", inputPath,
+		"-ss", fmt.Sprintf("%.3f", startTime), // Start time
+		"-t", fmt.Sprintf("%.3f", endTime-startTime), // Duration
+		"-r", fmt.Sprintf("%d", frameRate), // Frame rate
+		"-y", framePattern)
+	
 	if err := extractCmd.Run(); err != nil {
 		result.ErrorMessage = fmt.Sprintf("failed to extract frames: %v", err)
 		return result, fmt.Errorf(result.ErrorMessage)
@@ -269,7 +311,11 @@ func (u *Upscaler) UpscaleVideo(inputPath, outputPath string, progressCallback P
 	result.FramesProcessed = actualFrameCount
 
 	if progressCallback != nil {
-		progressCallback(20, 100, fmt.Sprintf("Processing %d frames with AI upscaling...", actualFrameCount))
+		scalingType := "upscaling"
+		if u.config.Scale < 0 {
+			scalingType = "downscaling"
+		}
+		progressCallback(20, 100, fmt.Sprintf("Processing %d frames with AI %s...", actualFrameCount, scalingType))
 	}
 
 	// Step 2: Upscale frames
@@ -295,7 +341,11 @@ func (u *Upscaler) UpscaleVideo(inputPath, outputPath string, progressCallback P
 		// Update progress
 		if progressCallback != nil {
 			currentProgress := 20 + int(float64(i+1)*progressStep)
-			progressCallback(currentProgress, 100, fmt.Sprintf("Upscaled frame %d/%d", i+1, actualFrameCount))
+			scaledVerb := "Upscaled"
+			if u.config.Scale < 0 {
+				scaledVerb = "Downscaled"
+			}
+			progressCallback(currentProgress, 100, fmt.Sprintf("%s frame %d/%d", scaledVerb, i+1, actualFrameCount))
 		}
 
 		// Memory management: force garbage collection every batch
@@ -305,7 +355,11 @@ func (u *Upscaler) UpscaleVideo(inputPath, outputPath string, progressCallback P
 	}
 
 	if progressCallback != nil {
-		progressCallback(80, 100, "Reassembling video with upscaled frames...")
+		scaledType := "upscaled"
+		if u.config.Scale < 0 {
+			scaledType = "downscaled"
+		}
+		progressCallback(80, 100, fmt.Sprintf("Reassembling video with %s frames...", scaledType))
 	}
 
 	// Step 3: Extract audio from original video
@@ -378,7 +432,11 @@ func (u *Upscaler) UpscaleVideo(inputPath, outputPath string, progressCallback P
 	}
 
 	if progressCallback != nil {
-		progressCallback(95, 100, "Finalizing upscaled video...")
+		scaledType := "upscaled"
+		if u.config.Scale < 0 {
+			scaledType = "downscaled"
+		}
+		progressCallback(95, 100, fmt.Sprintf("Finalizing %s video...", scaledType))
 	}
 
 	// Verify output file was created
@@ -387,24 +445,33 @@ func (u *Upscaler) UpscaleVideo(inputPath, outputPath string, progressCallback P
 		return result, fmt.Errorf(result.ErrorMessage)
 	}
 
-	result.ProcessingTime = time.Since(startTime)
+	result.ProcessingTime = time.Since(processingStartTime)
 	result.Success = true
 
 	if progressCallback != nil {
-		progressCallback(100, 100, "AI upscaling completed successfully!")
+		scalingType := "upscaling"
+		if u.config.Scale < 0 {
+			scalingType = "downscaling"
+		}
+		progressCallback(100, 100, fmt.Sprintf("AI %s completed successfully!", scalingType))
 	}
 
 	return result, nil
 }
 
-// UpscaleFrame upscales a single frame using Real-ESRGAN
+// UpscaleFrame processes a single frame using Real-ESRGAN (upscaling or downscaling)
 func (u *Upscaler) UpscaleFrame(inputPath, outputPath string) error {
 	if !u.config.Enabled {
-		return fmt.Errorf("upscaling is disabled")
+		return fmt.Errorf("scaling is disabled")
 	}
 
 	if !u.IsAvailable() {
 		return fmt.Errorf("Real-ESRGAN is not available")
+	}
+
+	// For downscaling, we need to handle it differently
+	if u.config.Scale < 0 {
+		return u.downscaleFrame(inputPath, outputPath)
 	}
 
 	// Get the Real-ESRGAN model name from the mapping
@@ -413,7 +480,7 @@ func (u *Upscaler) UpscaleFrame(inputPath, outputPath string) error {
 		return fmt.Errorf("unknown model key: %s", u.config.Model)
 	}
 
-	// Build command arguments
+	// Build command arguments for upscaling
 	args := []string{
 		u.config.ScriptPath,
 		inputPath,
@@ -422,9 +489,16 @@ func (u *Upscaler) UpscaleFrame(inputPath, outputPath string) error {
 		"--scale", strconv.Itoa(u.config.Scale),
 	}
 
-	// Add GPU flag if enabled
-	if u.config.UseGPU {
+	// Add GPU/CPU flag
+	if !u.config.UseGPU {
+		args = append(args, "--cpu")
+	} else if u.config.GPUDevice > 0 {
 		args = append(args, "--gpu", strconv.Itoa(u.config.GPUDevice))
+	}
+	
+	// Add FP16 flag for better GPU performance
+	if u.config.UseGPU {
+		args = append(args, "--fp16")
 	}
 
 	// Execute upscaling
@@ -438,6 +512,33 @@ func (u *Upscaler) UpscaleFrame(inputPath, outputPath string) error {
 	// Verify output file was created
 	if _, err := os.Stat(outputPath); os.IsNotExist(err) {
 		return fmt.Errorf("upscaling completed but output file was not created")
+	}
+
+	return nil
+}
+
+// downscaleFrame downscales a single frame using FFmpeg
+func (u *Upscaler) downscaleFrame(inputPath, outputPath string) error {
+	// Calculate the scale factor for FFmpeg
+	divisor := -u.config.Scale
+	scaleFilter := fmt.Sprintf("scale=iw/%d:ih/%d", divisor, divisor)
+
+	// Use FFmpeg to downscale while maintaining aspect ratio and quality
+	cmd := exec.Command("ffmpeg",
+		"-i", inputPath,
+		"-vf", scaleFilter,
+		"-c:v", "png",        // Use PNG for lossless intermediate frames
+		"-pix_fmt", "rgb24",  // Maintain color accuracy
+		"-y", outputPath)
+
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("downscaling failed: %v\nOutput: %s", err, string(output))
+	}
+
+	// Verify output file was created
+	if _, err := os.Stat(outputPath); os.IsNotExist(err) {
+		return fmt.Errorf("downscaling completed but output file was not created")
 	}
 
 	return nil
@@ -514,8 +615,21 @@ func ValidateConfig(config *UpscalingConfig) error {
 	}
 
 	// Validate scale
-	if config.Scale < 2 || config.Scale > 4 {
-		return fmt.Errorf("upscaling scale must be 2, 3, or 4")
+	if config.Scale == 0 {
+		return nil // No scaling
+	}
+	
+	if config.Scale > 0 {
+		// Upscaling
+		if config.Scale < 2 || config.Scale > 4 {
+			return fmt.Errorf("upscaling scale must be 2, 3, or 4")
+		}
+	} else {
+		// Downscaling (negative values)
+		allowedDownscales := map[int]bool{-2: true, -4: true, -8: true}
+		if !allowedDownscales[config.Scale] {
+			return fmt.Errorf("downscaling scale must be -2, -4, or -8")
+		}
 	}
 
 	// Validate GPU settings
@@ -524,6 +638,46 @@ func ValidateConfig(config *UpscalingConfig) error {
 	}
 
 	return nil
+}
+
+// GetGPUInfo returns information about available GPU acceleration
+func GetGPUInfo(pythonPath string) string {
+	cmd := exec.Command(pythonPath, "-c", `
+import torch
+import subprocess
+import platform
+
+info = []
+info.append(f"Platform: {platform.system()}")
+
+if torch.backends.mps.is_available():
+    try:
+        result = subprocess.run(['system_profiler', 'SPHardwareDataType'], 
+                              capture_output=True, text=True, timeout=5)
+        if 'Chip:' in result.stdout:
+            chip_line = [line for line in result.stdout.split('\n') if 'Chip:' in line][0]
+            chip_name = chip_line.split('Chip:')[1].strip()
+            info.append(f"GPU: {chip_name} (MPS)")
+        else:
+            info.append("GPU: Apple Silicon (MPS)")
+    except:
+        info.append("GPU: Apple Silicon (MPS)")
+elif torch.cuda.is_available():
+    gpu_name = torch.cuda.get_device_name(0)
+    gpu_memory = torch.cuda.get_device_properties(0).total_memory / 1024**3
+    info.append(f"GPU: {gpu_name} ({gpu_memory:.1f}GB CUDA)")
+else:
+    info.append("GPU: None (CPU only)")
+
+print(" | ".join(info))
+`)
+
+	output, err := cmd.Output()
+	if err != nil {
+		return "GPU: Unknown"
+	}
+
+	return strings.TrimSpace(string(output))
 }
 
 // GetDefaultConfig returns default upscaling configuration
@@ -549,10 +703,10 @@ func GetDefaultConfig() *UpscalingConfig {
 		Enabled:    false,
 		Model:      "general_4x",
 		Scale:      4,
-		UseGPU:     false,
+		UseGPU:     true,  // Enable GPU by default
 		GPUDevice:  0,
 		PythonPath: pythonPath,
-		ScriptPath: "scripts/upscale_frame.py",
+		ScriptPath: "scripts/real_esrgan_working.py",  // Use working Real-ESRGAN implementation
 		TempDir:    os.TempDir(),
 	}
 }

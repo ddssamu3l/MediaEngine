@@ -64,10 +64,11 @@ type ConversionConfig struct {
 	Resolution     string
 	Quality        int
 	QualityProfile string
-	// Add upscaling configuration
+	// AI scaling configuration (always enabled)
 	UseUpscaling   bool
 	UpscalingModel string
-	UpscalingScale int
+	UpscalingScale int    // Positive for upscaling, negative for downscaling
+	ScalingMode    string // "upscale" or "downscale"
 }
 
 func main() {
@@ -118,11 +119,22 @@ func main() {
 	config.QualityProfile = getQualityProfile()
 	config.StartTime = getStartTime(videoInfo.Duration)
 	config.EndTime = getEndTime(videoInfo.Duration, config.StartTime)
-	config.FrameRate = getFrameRate()
-	config.Resolution = getResolution()
+	config.FrameRate = getFrameRate(videoInfo)
+	config.Resolution = "Original" // Always keep original resolution
 
-	// Add upscaling preferences
-	config.UseUpscaling, config.UpscalingModel, config.UpscalingScale = getUpscalingPreferences()
+	// AI scaling is now enabled by default
+	config.UpscalingModel, config.UpscalingScale = getScalingPreferences(videoInfo)
+	if config.UpscalingScale != 0 {
+		config.UseUpscaling = true
+		if config.UpscalingScale > 0 {
+			config.ScalingMode = "upscale"
+		} else {
+			config.ScalingMode = "downscale"
+		}
+	} else {
+		config.UseUpscaling = false
+		config.ScalingMode = "none"
+	}
 
 	config.Quality = getQuality(config.OutputFormat, config.QualityProfile)
 	config.OutputPath = getOutputPath(config.OutputFormat)
@@ -139,15 +151,20 @@ func main() {
 
 	var conversionInputPath = config.InputPath
 
-	// AI Upscaling phase (if enabled)
-	if config.UseUpscaling {
-		fmt.Println("🚀 AI Upscaling enabled - this will take longer but provide better quality")
+	// AI Scaling phase (always enabled)
+	if config.UseUpscaling && config.ScalingMode != "none" {
+		if config.ScalingMode == "upscale" {
+			fmt.Println("🚀 AI Upscaling enabled - this will take longer but provide better quality")
+		} else if config.ScalingMode == "downscale" {
+			fmt.Printf("📉 AI Downscaling enabled - reducing quality by %dx\n", -config.UpscalingScale)
+		}
 
-		// Set up upscaling configuration
+		// Set up scaling configuration
 		upscalingConfig := upscaling.GetDefaultConfig()
 		upscalingConfig.Enabled = true
 		upscalingConfig.Model = config.UpscalingModel
 		upscalingConfig.Scale = config.UpscalingScale
+		upscalingConfig.IsDownscale = config.UpscalingScale < 0
 
 		// Validate upscaling configuration
 		if err := upscaling.ValidateConfig(upscalingConfig); err != nil {
@@ -179,25 +196,36 @@ func main() {
 				}
 			}
 
-			// Perform AI upscaling
-			fmt.Println("🎯 Starting AI upscaling process...")
-			upscalingResult, err := upscaler.UpscaleVideo(config.InputPath, upscaledVideoPath, progressCallback)
+			// Perform AI scaling
+			if config.ScalingMode == "upscale" {
+				fmt.Println("🎯 Starting AI upscaling process...")
+			} else {
+				fmt.Println("🎯 Starting AI downscaling process...")
+			}
+			upscalingResult, err := upscaler.UpscaleVideo(config.InputPath, upscaledVideoPath, config.StartTime, config.EndTime, config.FrameRate, progressCallback)
 
 			if err != nil {
-				fmt.Println(errorStyle.Render(fmt.Sprintf("❌ AI upscaling failed: %v", err)))
+				fmt.Println(errorStyle.Render(fmt.Sprintf("❌ AI %s failed: %v", config.ScalingMode, err)))
 				fmt.Println("⚠️  Falling back to standard conversion...")
 			} else if upscalingResult.Success {
-				fmt.Println(successStyle.Render("✅ AI upscaling completed successfully!"))
-				fmt.Printf("📈 Upscaled from %dx%d to %dx%d (%d frames processed in %v)\n",
-					upscalingResult.OriginalSize.Width, upscalingResult.OriginalSize.Height,
-					upscalingResult.UpscaledSize.Width, upscalingResult.UpscaledSize.Height,
-					upscalingResult.FramesProcessed, upscalingResult.ProcessingTime.Round(time.Second))
+				fmt.Println(successStyle.Render(fmt.Sprintf("✅ AI %s completed successfully!", config.ScalingMode)))
+				if config.ScalingMode == "upscale" {
+					fmt.Printf("📈 Upscaled from %dx%d to %dx%d (%d frames processed in %v)\n",
+						upscalingResult.OriginalSize.Width, upscalingResult.OriginalSize.Height,
+						upscalingResult.UpscaledSize.Width, upscalingResult.UpscaledSize.Height,
+						upscalingResult.FramesProcessed, upscalingResult.ProcessingTime.Round(time.Second))
+				} else {
+					fmt.Printf("📉 Downscaled from %dx%d to %dx%d (%d frames processed in %v)\n",
+						upscalingResult.OriginalSize.Width, upscalingResult.OriginalSize.Height,
+						upscalingResult.UpscaledSize.Width, upscalingResult.UpscaledSize.Height,
+						upscalingResult.FramesProcessed, upscalingResult.ProcessingTime.Round(time.Second))
+				}
 
-				// Use upscaled video as input for format conversion
+				// Use scaled video as input for format conversion
 				conversionInputPath = upscaledVideoPath
-				fmt.Println("🔄 Converting upscaled video to final format...")
+				fmt.Println("🔄 Converting scaled video to final format...")
 			} else {
-				fmt.Println(errorStyle.Render("❌ AI upscaling completed but was not successful"))
+				fmt.Println(errorStyle.Render(fmt.Sprintf("❌ AI %s completed but was not successful", config.ScalingMode)))
 				fmt.Println("⚠️  Falling back to standard conversion...")
 			}
 		}
@@ -389,9 +417,14 @@ func getEndTime(duration, startTime float64) float64 {
 	return endTime
 }
 
-func getFrameRate() int {
+func getFrameRate(videoInfo *video.VideoInfo) int {
+	originalFPS := int(videoInfo.FrameRate + 0.5) // Round to nearest integer
+	if originalFPS < 1 {
+		originalFPS = 30 // Fallback if frame rate detection failed
+	}
+
 	prompt := promptui.Prompt{
-		Label: "🎞️  Enter frame rate (1-60 fps) (press Enter for default: 15)",
+		Label: fmt.Sprintf("🎞️  Enter frame rate (1-%d fps) (press Enter for default: %d)", originalFPS, originalFPS),
 		Validate: func(input string) error {
 			if strings.TrimSpace(input) == "" {
 				return nil // Allow empty for default
@@ -400,8 +433,8 @@ func getFrameRate() int {
 			if err != nil {
 				return fmt.Errorf("invalid number format")
 			}
-			if value < 1 || value > 60 {
-				return fmt.Errorf("frame rate must be between 1 and 60 fps")
+			if value < 1 || value > originalFPS {
+				return fmt.Errorf("frame rate must be between 1 and %d fps (original video frame rate)", originalFPS)
 			}
 			return nil
 		},
@@ -414,31 +447,42 @@ func getFrameRate() int {
 	}
 
 	if strings.TrimSpace(result) == "" {
-		return 15
+		return originalFPS
 	}
 
 	frameRate, _ := strconv.Atoi(result)
 	return frameRate
 }
 
-func getResolution() string {
-	resolutions := []string{
-		"320x240   (QVGA)",
-		"480x360   (Small)",
-		"640x480   (VGA)",
-		"800x600   (SVGA)",
-		"1024x768  (XGA)",
-		"1280x720  (HD)",
-		"1920x1080 (Full HD)",
-		"2560x1440 (QHD)",
-		"3840x2160 (4K UHD)",
-		"Original  (Keep original resolution)",
+
+// Get scaling preferences (upscale/downscale/none)
+func getScalingPreferences(videoInfo *video.VideoInfo) (string, int) {
+	// Check if AI scaling is available
+	config := upscaling.GetDefaultConfig()
+	upscaler := upscaling.NewUpscaler(config)
+	if !upscaler.IsAvailable() {
+		fmt.Println(warningStyle.Render("⚠️  AI Scaling not available (Real-ESRGAN not installed)"))
+		return "", 0
+	}
+
+	// Show GPU information
+	gpuInfo := upscaling.GetGPUInfo(config.PythonPath)
+	fmt.Printf("💻 %s\n", infoStyle.Render(gpuInfo))
+
+	// Show current resolution
+	fmt.Printf("📐 Current video resolution: %s\n", infoStyle.Render(fmt.Sprintf("%dx%d", videoInfo.Width, videoInfo.Height)))
+
+	// Get scaling mode
+	scalingOptions := []string{
+		"Keep Original Resolution (No AI processing)",
+		"Upscale - Enhance quality (2x, 4x)",
+		"Downscale - Reduce quality (1/2x, 1/4x, 1/8x)",
 	}
 
 	prompt := promptui.Select{
-		Label:        "📐 Select output resolution",
-		Items:        resolutions,
-		Size:         10,
+		Label:        "🎯 Select AI scaling mode",
+		Items:        scalingOptions,
+		Size:         3,
 		HideSelected: true,
 		Templates: &promptui.SelectTemplates{
 			Label:    "{{ . }}",
@@ -454,39 +498,20 @@ func getResolution() string {
 		os.Exit(1)
 	}
 
-	// Extract resolution from the selected option
-	resolutionMappings := []string{
-		"320x240",
-		"480x360",
-		"640x480",
-		"800x600",
-		"1024x768",
-		"1280x720",
-		"1920x1080",
-		"2560x1440",
-		"3840x2160",
-		"Original",
+	switch index {
+	case 0: // Keep original
+		return "", 0
+	case 1: // Upscale
+		return getUpscaleOptions()
+	case 2: // Downscale
+		return getDownscaleOptions()
 	}
 
-	return resolutionMappings[index]
+	return "", 0
 }
 
-// Add new function to get upscaling preferences
-func getUpscalingPreferences() (bool, string, int) {
-	// Check if upscaling is available
-	upscaler := upscaling.NewUpscaler(upscaling.GetDefaultConfig())
-	if !upscaler.IsAvailable() {
-		fmt.Println(warningStyle.Render("⚠️  AI Upscaling not available (Real-ESRGAN not installed)"))
-		return false, "", 0
-	}
-
-	// Ask if user wants to use upscaling
-	useUpscaling := confirmProceed("🚀 Enable AI upscaling? (y/N): ", false)
-	if !useUpscaling {
-		return false, "", 0
-	}
-
-	// Get upscaling model
+// Get upscaling options
+func getUpscaleOptions() (string, int) {
 	models := []string{
 		"General Purpose 4x (Best for photos/real content)",
 		"General Purpose 2x (Faster, good quality)",
@@ -494,7 +519,7 @@ func getUpscalingPreferences() (bool, string, int) {
 	}
 
 	prompt := promptui.Select{
-		Label:        "🎯 Select AI upscaling model",
+		Label:        "🚀 Select upscaling model",
 		Items:        models,
 		Size:         3,
 		HideSelected: true,
@@ -515,7 +540,41 @@ func getUpscalingPreferences() (bool, string, int) {
 	modelMappings := []string{"general_4x", "general_2x", "anime_4x"}
 	scaleMappings := []int{4, 2, 4}
 
-	return true, modelMappings[index], scaleMappings[index]
+	return modelMappings[index], scaleMappings[index]
+}
+
+// Get downscaling options
+func getDownscaleOptions() (string, int) {
+	downscaleOptions := []string{
+		"Reduce by 2x (1/2 original size)",
+		"Reduce by 4x (1/4 original size)",
+		"Reduce by 8x (1/8 original size)",
+	}
+
+	prompt := promptui.Select{
+		Label:        "📉 Select downscaling magnitude",
+		Items:        downscaleOptions,
+		Size:         3,
+		HideSelected: true,
+		Templates: &promptui.SelectTemplates{
+			Label:    "{{ . }}",
+			Active:   "▶ {{ . | cyan | bold }}",
+			Inactive: "  {{ . | faint }}",
+			Selected: "{{ . | green | bold }}",
+		},
+	}
+
+	index, _, err := prompt.Run()
+	if err != nil {
+		fmt.Println(errorStyle.Render("❌ Operation cancelled"))
+		os.Exit(1)
+	}
+
+	// Return negative values to indicate downscaling
+	scaleMappings := []int{-2, -4, -8}
+	
+	// For downscaling, we'll use the general_2x model as it's faster
+	return "general_2x", scaleMappings[index]
 }
 
 func getOutputFormat() string {
@@ -812,12 +871,21 @@ func showConversionSummary(config *ConversionConfig, videoInfo *video.VideoInfo)
 	fmt.Printf("• Frame rate: %d fps\n", config.FrameRate)
 	fmt.Printf("• Resolution: %s\n", config.Resolution)
 
-	// Add upscaling info
-	if config.UseUpscaling {
-		fmt.Printf("• AI Upscaling: %s (%dx)\n",
-			upscaling.UpscalingModelDescriptions[config.UpscalingModel],
-			config.UpscalingScale)
-		fmt.Printf("• Final resolution will be %dx larger\n", config.UpscalingScale)
+	// Add scaling info
+	if config.UseUpscaling && config.ScalingMode != "none" {
+		if config.ScalingMode == "upscale" {
+			fmt.Printf("• AI Upscaling: %s (%dx)\n",
+				upscaling.UpscalingModelDescriptions[config.UpscalingModel],
+				config.UpscalingScale)
+			fmt.Printf("• Final resolution will be %dx larger\n", config.UpscalingScale)
+		} else if config.ScalingMode == "downscale" {
+			fmt.Printf("• AI Downscaling: Reducing by %dx\n", -config.UpscalingScale)
+			fmt.Printf("• Final resolution will be %d%% of original\n", 100/(-config.UpscalingScale))
+		}
+		// Show GPU acceleration info
+		upscalingConfig := upscaling.GetDefaultConfig()
+		gpuInfo := upscaling.GetGPUInfo(upscalingConfig.PythonPath)
+		fmt.Printf("• Acceleration: %s\n", gpuInfo)
 	}
 
 	// Display quality profile
