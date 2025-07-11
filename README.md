@@ -88,7 +88,35 @@ go build .
 
 ## Usage
 
-### Run the application:
+### Quick Start (Recommended)
+For the easiest experience, use the launcher scripts that handle environment setup automatically:
+
+**macOS/Linux:**
+```bash
+# Install FFmpeg first
+brew install ffmpeg              # macOS
+sudo apt install ffmpeg         # Ubuntu/Debian
+
+# Run the media engine
+./run_mediaengine.sh
+```
+
+**Windows:**
+```cmd
+# Install FFmpeg from https://ffmpeg.org/download.html
+# Or with chocolatey: choco install ffmpeg
+
+# Run the media engine
+run_mediaengine.bat
+```
+
+The launcher script will automatically:
+1. Create a Python virtual environment
+2. Install required packages (PyTorch, OpenCV, etc.)
+3. Set up AI models for upscaling
+4. Launch the media engine
+
+### Manual Run (For Developers):
 ```bash
 # Option 1: Run directly
 go run .
