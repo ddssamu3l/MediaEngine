@@ -242,7 +242,7 @@ func main() {
 
 func getInputPathWithValidation() string {
 	prompt := promptui.Prompt{
-		Label: "📁 Enter video file path",
+		Label: "📁 Source video path (relative and absolute paths are supported)",
 		Validate: func(input string) error {
 			return validation.ValidateInputPath(input)
 		},
@@ -317,9 +317,9 @@ func cleanInputPath(input string) string {
 
 func getStartTime(duration float64) float64 {
 	durationStr := ui.FormatDuration(duration)
+
 	prompt := promptui.Prompt{
-		Label:   fmt.Sprintf("⏰ Enter start time in seconds (0 - %.2f) [%s]", duration, durationStr),
-		Default: "0",
+		Label: fmt.Sprintf("⏰ Enter start time in seconds (0 - %.2f) [%s] (press Enter for default: 0)", duration, durationStr),
 		Validate: func(input string) error {
 			if strings.TrimSpace(input) == "" {
 				return nil // Allow empty for default
@@ -354,9 +354,9 @@ func getStartTime(duration float64) float64 {
 
 func getEndTime(duration, startTime float64) float64 {
 	durationStr := ui.FormatDuration(duration)
+
 	prompt := promptui.Prompt{
-		Label:   fmt.Sprintf("⏰ Enter end time in seconds (%.2f - %.2f) [%s]", startTime, duration, durationStr),
-		Default: fmt.Sprintf("%.2f", duration),
+		Label: fmt.Sprintf("⏰ Enter end time in seconds (%.2f - %.2f) [%s] (press Enter for default: %.2f)", startTime, duration, durationStr, duration),
 		Validate: func(input string) error {
 			if strings.TrimSpace(input) == "" {
 				return nil // Allow empty for default
@@ -391,8 +391,7 @@ func getEndTime(duration, startTime float64) float64 {
 
 func getFrameRate() int {
 	prompt := promptui.Prompt{
-		Label:   "🎞️  Enter frame rate (1-60 fps)",
-		Default: "15",
+		Label: "🎞️  Enter frame rate (1-60 fps) (press Enter for default: 15)",
 		Validate: func(input string) error {
 			if strings.TrimSpace(input) == "" {
 				return nil // Allow empty for default
@@ -617,8 +616,7 @@ func getQuality(outputFormat, qualityProfile string) int {
 	}
 
 	prompt := promptui.Prompt{
-		Label:   fmt.Sprintf("⚡ %s", qualityDesc),
-		Default: fmt.Sprintf("%d", defaultQuality),
+		Label: fmt.Sprintf("⚡ %s (press Enter for default: %d)", qualityDesc, defaultQuality),
 		Validate: func(input string) error {
 			if strings.TrimSpace(input) == "" {
 				return nil // Allow empty for default
@@ -674,8 +672,16 @@ func getOutputPath(outputFormat string) string {
 		ext = ".gif"
 	}
 
-	prompt := promptui.Prompt{
-		Label: fmt.Sprintf("💾 Enter output %s path (press Enter for current directory)", outputFormat),
+	// Step 1: Get output directory
+	currentDir := func() string {
+		if cwd, err := os.Getwd(); err == nil {
+			return cwd
+		}
+		return "."
+	}()
+
+	dirPrompt := promptui.Prompt{
+		Label: fmt.Sprintf("📁 Enter output directory path (press Enter for default: %s)", currentDir),
 		Validate: func(input string) error {
 			if strings.TrimSpace(input) == "" {
 				return nil // Allow empty for default (current directory)
@@ -684,32 +690,53 @@ func getOutputPath(outputFormat string) string {
 		},
 	}
 
-	result, err := prompt.Run()
+	dirResult, err := dirPrompt.Run()
 	if err != nil {
 		fmt.Println(errorStyle.Render("❌ Operation cancelled"))
 		os.Exit(1)
 	}
 
-	// Handle empty input (default to current directory)
-	if strings.TrimSpace(result) == "" {
-		cwd, _ := os.Getwd()
-		return filepath.Join(cwd, "output"+ext)
+	// Handle directory selection
+	var outputDir string
+	if strings.TrimSpace(dirResult) == "" {
+		outputDir, _ = os.Getwd()
+	} else {
+		outputDir = processOutputPath(dirResult)
 	}
 
-	// Process the path and ensure correct extension
-	processedPath := processOutputPath(result)
+	// Step 2: Get filename
+	defaultFilename := "output" + ext
 
-	// Ensure correct extension
-	currentExt := strings.ToLower(filepath.Ext(processedPath))
-	if currentExt != ext {
-		// Remove current extension if it exists and add correct one
-		if currentExt != "" {
-			processedPath = strings.TrimSuffix(processedPath, currentExt)
-		}
-		processedPath += ext
+	filenamePrompt := promptui.Prompt{
+		Label: fmt.Sprintf("📝 Enter output filename (without the %s extension) (press Enter for default: output)", ext),
+		Validate: func(input string) error {
+			if strings.TrimSpace(input) == "" {
+				return nil // Allow empty for default
+			}
+			// Basic filename validation
+			filename := strings.TrimSpace(input)
+			if strings.ContainsAny(filename, `<>:"/\|?*`) {
+				return fmt.Errorf("filename contains invalid characters")
+			}
+			return nil
+		},
 	}
 
-	return processedPath
+	filenameResult, err := filenamePrompt.Run()
+	if err != nil {
+		fmt.Println(errorStyle.Render("❌ Operation cancelled"))
+		os.Exit(1)
+	}
+
+	// Handle filename
+	var filename string
+	if strings.TrimSpace(filenameResult) == "" {
+		filename = defaultFilename
+	} else {
+		filename = strings.TrimSpace(filenameResult) + ext
+	}
+
+	return filepath.Join(outputDir, filename)
 }
 
 // processOutputPath handles path cleaning, quote removal, and extension addition
@@ -736,23 +763,17 @@ func processOutputPath(input string) string {
 		return cleanedPath
 	}
 
-	// Check if the path exists and is a directory - if so, append output filename
-	if stat, err := os.Stat(absPath); err == nil && stat.IsDir() {
-		return filepath.Join(absPath, "output")
-	}
-
 	return filepath.Clean(absPath)
 }
 
 func confirmProceed(message string, defaultYes bool) bool {
-	defaultValue := "n"
+	defaultStr := "N"
 	if defaultYes {
-		defaultValue = "y"
+		defaultStr = "Y"
 	}
 
 	prompt := promptui.Prompt{
-		Label:   message,
-		Default: defaultValue,
+		Label: fmt.Sprintf("%s (press Enter for default: %s)", message, defaultStr),
 		Validate: func(input string) error {
 			if strings.TrimSpace(input) == "" {
 				return nil // Allow empty for default

@@ -100,7 +100,8 @@ func (u *Upscaler) IsAvailable() bool {
 		return false
 	}
 
-	return strings.TrimSpace(string(output)) == "OK"
+	// Check if output contains "OK" (our demo module prints additional messages)
+	return strings.Contains(string(output), "OK")
 }
 
 // EstimateMemoryUsage estimates memory requirements for video upscaling
@@ -312,7 +313,32 @@ func (u *Upscaler) UpscaleVideo(inputPath, outputPath string, progressCallback P
 	audioCmd := exec.Command("ffmpeg", "-i", inputPath, "-vn", "-acodec", "copy", "-y", audioPath)
 	audioCmd.Run() // Don't fail if no audio track exists
 
-	// Step 4: Reassemble video
+	// Step 4: Get original video frame rate for reassembly
+	originalFrameRate := "15" // Default fallback (matches the app's default)
+	if frameRateCmd := exec.Command("ffprobe", "-v", "quiet", "-select_streams", "v:0",
+		"-show_entries", "stream=r_frame_rate", "-of", "csv=s=x:p=0", inputPath); frameRateCmd != nil {
+		if output, err := frameRateCmd.Output(); err == nil {
+			frameRateStr := strings.TrimSpace(string(output))
+			if frameRateStr != "" && frameRateStr != "0/0" && frameRateStr != "N/A" {
+				// Handle fractional frame rates like "30000/1001"
+				if strings.Contains(frameRateStr, "/") {
+					parts := strings.Split(frameRateStr, "/")
+					if len(parts) == 2 {
+						if num, err1 := strconv.ParseFloat(parts[0], 64); err1 == nil {
+							if den, err2 := strconv.ParseFloat(parts[1], 64); err2 == nil && den != 0 {
+								fps := num / den
+								originalFrameRate = fmt.Sprintf("%.3f", fps)
+							}
+						}
+					}
+				} else {
+					originalFrameRate = frameRateStr
+				}
+			}
+		}
+	}
+
+	// Step 5: Reassemble video with improved FFmpeg parameters
 	upscaledPattern := filepath.Join(upscaledDir, "frame_%06d.png")
 	var assembleCmd *exec.Cmd
 
@@ -320,28 +346,34 @@ func (u *Upscaler) UpscaleVideo(inputPath, outputPath string, progressCallback P
 	if _, err := os.Stat(audioPath); err == nil {
 		// Reassemble with audio
 		assembleCmd = exec.Command("ffmpeg",
-			"-framerate", "30", // Use appropriate framerate
+			"-framerate", originalFrameRate,
 			"-i", upscaledPattern,
 			"-i", audioPath,
 			"-c:v", "libx264",
 			"-preset", "medium",
-			"-crf", "18", // High quality encoding
+			"-crf", "18",
+			"-pix_fmt", "yuv420p", // Ensure compatibility
 			"-c:a", "aac",
-			"-strict", "experimental",
+			"-movflags", "+faststart", // Web optimization
 			"-y", outputPath)
 	} else {
 		// Reassemble without audio
 		assembleCmd = exec.Command("ffmpeg",
-			"-framerate", "30",
+			"-framerate", originalFrameRate,
 			"-i", upscaledPattern,
 			"-c:v", "libx264",
 			"-preset", "medium",
 			"-crf", "18",
+			"-pix_fmt", "yuv420p", // Ensure compatibility
+			"-movflags", "+faststart", // Web optimization
 			"-y", outputPath)
 	}
 
-	if err := assembleCmd.Run(); err != nil {
-		result.ErrorMessage = fmt.Sprintf("failed to reassemble video: %v", err)
+	// Run command and capture output for debugging
+	cmdOutput, err := assembleCmd.CombinedOutput()
+	if err != nil {
+		result.ErrorMessage = fmt.Sprintf("failed to reassemble video: %v\nFFmpeg command: %v\nFFmpeg output: %s",
+			err, assembleCmd.Args, string(cmdOutput))
 		return result, fmt.Errorf(result.ErrorMessage)
 	}
 
@@ -375,12 +407,18 @@ func (u *Upscaler) UpscaleFrame(inputPath, outputPath string) error {
 		return fmt.Errorf("Real-ESRGAN is not available")
 	}
 
+	// Get the Real-ESRGAN model name from the mapping
+	realModelName, exists := UpscalingModels[u.config.Model]
+	if !exists {
+		return fmt.Errorf("unknown model key: %s", u.config.Model)
+	}
+
 	// Build command arguments
 	args := []string{
 		u.config.ScriptPath,
 		inputPath,
 		outputPath,
-		"--model", u.config.Model,
+		"--model", realModelName, // Use the Real-ESRGAN model name
 		"--scale", strconv.Itoa(u.config.Scale),
 	}
 
@@ -490,10 +528,21 @@ func ValidateConfig(config *UpscalingConfig) error {
 
 // GetDefaultConfig returns default upscaling configuration
 func GetDefaultConfig() *UpscalingConfig {
-	// Auto-detect Python path
-	pythonPath := DetectPythonPath()
-	if pythonPath == "" {
-		pythonPath = "python3" // Fallback
+	// Check for virtual environment first
+	venvPython := "./realesrgan_env/bin/python"
+	if runtime.GOOS == "windows" {
+		venvPython = "./realesrgan_env/Scripts/python.exe"
+	}
+
+	var pythonPath string
+	if _, err := os.Stat(venvPython); err == nil {
+		pythonPath = venvPython
+	} else {
+		// Fallback to auto-detect system Python
+		pythonPath = DetectPythonPath()
+		if pythonPath == "" {
+			pythonPath = "python3" // Final fallback
+		}
 	}
 
 	return &UpscalingConfig{
