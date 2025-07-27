@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"mediaengine/internal/ffmpeg"
+	"mediaengine/internal/interpolation"
 	"mediaengine/internal/ui"
 	"mediaengine/internal/upscaling"
 	"mediaengine/internal/validation"
@@ -69,11 +70,16 @@ type ConversionConfig struct {
 	UpscalingModel string
 	UpscalingScale int    // Positive for upscaling, negative for downscaling
 	ScalingMode    string // "upscale" or "downscale"
+	// AI frame interpolation configuration
+	UseInterpolation     bool
+	InterpolationModel   string // RIFE model version (v4.6, v4.4, etc.)
+	TargetFPS           int    // Target frame rate for interpolation
+	InterpolationQuality string // "fast", "balanced", "high_quality"
 }
 
 func main() {
 	fmt.Println(titleStyle.Render("🎬 Universal Media Engine"))
-	fmt.Println("Professional video-to-media conversion with real-time progress tracking\n")
+	fmt.Println("Professional video-to-media conversion with real-time progress tracking")
 
 	// Check if FFmpeg and FFprobe are available
 	fmt.Print("🔍 Checking system requirements... ")
@@ -135,6 +141,9 @@ func main() {
 		config.UseUpscaling = false
 		config.ScalingMode = "none"
 	}
+
+	// AI frame interpolation configuration
+	config.UseInterpolation, config.InterpolationModel, config.TargetFPS, config.InterpolationQuality = getInterpolationPreferences(videoInfo)
 
 	config.Quality = getQuality(config.OutputFormat, config.QualityProfile)
 	config.OutputPath = getOutputPath(config.OutputFormat)
@@ -226,6 +235,78 @@ func main() {
 				fmt.Println("🔄 Converting scaled video to final format...")
 			} else {
 				fmt.Println(errorStyle.Render(fmt.Sprintf("❌ AI %s completed but was not successful", config.ScalingMode)))
+				fmt.Println("⚠️  Falling back to standard conversion...")
+			}
+		}
+	}
+
+	// AI Frame Interpolation phase
+	if config.UseInterpolation {
+		fmt.Println("🎬 AI Frame Interpolation enabled - increasing smoothness")
+		fmt.Printf("📈 Target frame rate: %dfps → %dfps\n", config.FrameRate, config.TargetFPS)
+
+		// Set up interpolation configuration
+		interpolationConfig := interpolation.GetDefaultConfig()
+		interpolationConfig.Enabled = true
+		interpolationConfig.Model = config.InterpolationModel
+		interpolationConfig.TargetFPS = config.TargetFPS
+		interpolationConfig.OriginalFPS = config.FrameRate
+		interpolationConfig.Multiplier = config.TargetFPS / config.FrameRate
+		interpolationConfig.QualityLevel = config.InterpolationQuality
+
+		// Validate interpolation configuration
+		if err := interpolation.ValidateConfig(interpolationConfig); err != nil {
+			fmt.Println(errorStyle.Render(fmt.Sprintf("❌ Interpolation configuration error: %v", err)))
+			fmt.Println("⚠️  Continuing with standard conversion...")
+		} else {
+			// Create interpolator
+			interpolator := interpolation.NewInterpolator(interpolationConfig)
+
+			// Create temporary interpolated video path
+			tempDir := os.TempDir()
+			interpolatedVideoPath := filepath.Join(tempDir, fmt.Sprintf("interpolated_%d.mp4", time.Now().Unix()))
+
+			// Ensure cleanup of temporary file
+			defer func() {
+				if _, err := os.Stat(interpolatedVideoPath); err == nil {
+					if removeErr := os.Remove(interpolatedVideoPath); removeErr != nil {
+						fmt.Printf("Warning: failed to clean up temporary file %s: %v\n", interpolatedVideoPath, removeErr)
+					}
+				}
+			}()
+
+			// Create progress callback for interpolation
+			progressCallback := func(current, total int, message string) {
+				if current == total {
+					fmt.Printf("\r✅ %s\n", message)
+				} else {
+					fmt.Printf("\r🔄 [%d%%] %s", current, message)
+				}
+			}
+
+			// Perform AI frame interpolation
+			fmt.Println("🎯 Starting AI frame interpolation process...")
+			interpolationResult, err := interpolator.InterpolateVideo(conversionInputPath, interpolatedVideoPath, config.StartTime, config.EndTime, progressCallback)
+
+			if err != nil {
+				fmt.Println(errorStyle.Render(fmt.Sprintf("❌ AI frame interpolation failed: %v", err)))
+				fmt.Println("⚠️  Falling back to standard conversion...")
+				
+				// Log detailed error information for debugging
+				fmt.Printf("Debug: Interpolation error details - Input: %s, Target FPS: %d, Quality: %s\n",
+					conversionInputPath, config.TargetFPS, config.InterpolationQuality)
+			} else if interpolationResult.Success {
+				fmt.Println(successStyle.Render("✅ AI frame interpolation completed successfully!"))
+				fmt.Printf("🎬 Interpolated from %d frames to %d frames (%dfps → %dfps, processed in %v)\n",
+					interpolationResult.OriginalFrameCount, interpolationResult.InterpolatedFrameCount,
+					interpolationResult.OriginalFPS, interpolationResult.InterpolatedFPS,
+					interpolationResult.ProcessingTime.Round(time.Second))
+
+				// Use interpolated video as input for format conversion
+				conversionInputPath = interpolatedVideoPath
+				fmt.Println("🔄 Converting interpolated video to final format...")
+			} else {
+				fmt.Println(errorStyle.Render("❌ AI frame interpolation completed but was not successful"))
 				fmt.Println("⚠️  Falling back to standard conversion...")
 			}
 		}
@@ -577,6 +658,167 @@ func getDownscaleOptions() (string, int) {
 	return "general_2x", scaleMappings[index]
 }
 
+func getInterpolationPreferences(videoInfo *video.VideoInfo) (bool, string, int, string) {
+	// Check if AI frame interpolation is available
+	config := interpolation.GetDefaultConfig()
+	interpolator := interpolation.NewInterpolator(config)
+	if !interpolator.IsAvailable() {
+		fmt.Println(warningStyle.Render("⚠️  AI Frame Interpolation not available (RIFE not installed)"))
+		return false, "", 0, ""
+	}
+
+	// Show GPU information for interpolation
+	gpuInfo := upscaling.GetGPUInfo(config.PythonPath)
+	fmt.Printf("💻 GPU: %s\n", gpuInfo)
+
+	// Frame interpolation options
+	interpolationOptions := []string{
+		"No Interpolation (Keep original frame rate)",
+		"2x Frame Rate    (Double smoothness - 30fps → 60fps)",
+		"3x Frame Rate    (Triple smoothness - 30fps → 90fps)",
+		"4x Frame Rate    (Quadruple smoothness - 30fps → 120fps)",
+	}
+
+	prompt := promptui.Select{
+		Label:        "🎬 Select frame interpolation mode",
+		Items:        interpolationOptions,
+		Size:         4,
+		HideSelected: true,
+		Templates: &promptui.SelectTemplates{
+			Label:    "{{ . }}",
+			Active:   "▶ {{ . | cyan | bold }}",
+			Inactive: "  {{ . | faint }}",
+			Selected: "{{ . | green | bold }}",
+		},
+	}
+
+	index, _, err := prompt.Run()
+	if err != nil {
+		fmt.Println(errorStyle.Render("❌ Operation cancelled"))
+		os.Exit(1)
+	}
+
+	// No interpolation selected
+	if index == 0 {
+		return false, "", 0, ""
+	}
+
+	// Get original frame rate to calculate target FPS
+	originalFPS := 30 // Default, will be detected from video
+	if videoInfo.FrameRate > 0 {
+		originalFPS = int(videoInfo.FrameRate)
+	}
+
+	// Calculate target FPS based on multiplier
+	multipliers := []int{2, 3, 4}
+	multiplier := multipliers[index-1]
+	targetFPS := originalFPS * multiplier
+
+	// Validate GPU memory requirements for interpolation
+	canHandle, message, err := upscaling.CanHandleInterpolation(config.PythonPath, 
+		int(videoInfo.Width), int(videoInfo.Height), targetFPS, originalFPS)
+	if err != nil {
+		fmt.Println(warningStyle.Render(fmt.Sprintf("⚠️  Warning: Failed to check GPU compatibility: %v", err)))
+	} else if !canHandle {
+		fmt.Println(warningStyle.Render(fmt.Sprintf("⚠️  Warning: %s", message)))
+		if !confirmProceed("Continue with interpolation anyway? (y/N): ", false) {
+			return false, "", 0, ""
+		}
+	} else {
+		fmt.Printf("✅ GPU compatibility: %s\n", message)
+	}
+
+	// Additional validation checks
+	// Check frame rate limits
+	if targetFPS > 120 {
+		fmt.Println(warningStyle.Render(fmt.Sprintf("⚠️  Warning: Target frame rate (%dfps) is very high and may cause performance issues", targetFPS)))
+		if !confirmProceed("Continue with high frame rate? (y/N): ", false) {
+			return false, "", 0, ""
+		}
+	}
+
+	// Check video duration for processing time estimation  
+	duration := videoInfo.Duration
+	if duration > 60 { // More than 1 minute
+		estimatedTime := duration * float64(multiplier) * 0.5 // Rough estimate: 0.5 seconds per second per multiplier
+		fmt.Println(warningStyle.Render(fmt.Sprintf("⚠️  Warning: Video duration (%.1fs) is long. Estimated processing time: %.1f minutes", 
+			duration, estimatedTime/60)))
+		if !confirmProceed("Continue with long video? (y/N): ", false) {
+			return false, "", 0, ""
+		}
+	}
+
+	// Check resolution for memory requirements
+	pixels := int(videoInfo.Width * videoInfo.Height)
+	if pixels > 1920*1080 { // Above 1080p
+		fmt.Println(warningStyle.Render(fmt.Sprintf("⚠️  Warning: High resolution (%dx%d) will require more GPU memory and processing time", 
+			int(videoInfo.Width), int(videoInfo.Height))))
+		if !confirmProceed("Continue with high resolution? (y/N): ", false) {
+			return false, "", 0, ""
+		}
+	}
+
+	// Get RIFE model selection
+	models := []string{
+		"v4.6 (Highest Quality - Slower)",
+		"v4.4 (Balanced Quality/Speed)",
+		"v4.0 (Fastest - Good Quality)",
+	}
+
+	modelPrompt := promptui.Select{
+		Label:        "🤖 Select RIFE model",
+		Items:        models,
+		Size:         3,
+		HideSelected: true,
+		Templates: &promptui.SelectTemplates{
+			Label:    "{{ . }}",
+			Active:   "▶ {{ . | cyan | bold }}",
+			Inactive: "  {{ . | faint }}",
+			Selected: "{{ . | green | bold }}",
+		},
+	}
+
+	modelIndex, _, err := modelPrompt.Run()
+	if err != nil {
+		fmt.Println(errorStyle.Render("❌ Operation cancelled"))
+		os.Exit(1)
+	}
+
+	modelKeys := []string{"rife_v4.6", "rife_v4.4", "rife_v4.0"}
+	selectedModel := modelKeys[modelIndex]
+
+	// Get quality profile for interpolation
+	qualityOptions := []string{
+		"Maximum Speed  (Optimized for speed)",
+		"Balanced       (Good quality and speed)",
+		"Maximum Quality (Best quality, slower)",
+	}
+
+	qualityPrompt := promptui.Select{
+		Label:        "⚡ Select interpolation quality",
+		Items:        qualityOptions,
+		Size:         3,
+		HideSelected: true,
+		Templates: &promptui.SelectTemplates{
+			Label:    "{{ . }}",
+			Active:   "▶ {{ . | cyan | bold }}",
+			Inactive: "  {{ . | faint }}",
+			Selected: "{{ . | green | bold }}",
+		},
+	}
+
+	qualityIndex, _, err := qualityPrompt.Run()
+	if err != nil {
+		fmt.Println(errorStyle.Render("❌ Operation cancelled"))
+		os.Exit(1)
+	}
+
+	qualityKeys := []string{"fast", "balanced", "high_quality"}
+	selectedQuality := qualityKeys[qualityIndex]
+
+	return true, selectedModel, targetFPS, selectedQuality
+}
+
 func getOutputFormat() string {
 	formats := []string{
 		"GIF       (Graphics Interchange Format - Animated)",
@@ -886,6 +1128,21 @@ func showConversionSummary(config *ConversionConfig, videoInfo *video.VideoInfo)
 		upscalingConfig := upscaling.GetDefaultConfig()
 		gpuInfo := upscaling.GetGPUInfo(upscalingConfig.PythonPath)
 		fmt.Printf("• Acceleration: %s\n", gpuInfo)
+	}
+
+	// Add interpolation info
+	if config.UseInterpolation {
+		originalFPS := config.FrameRate
+		multiplier := config.TargetFPS / originalFPS
+		fmt.Printf("• AI Frame Interpolation: %s\n", interpolation.InterpolationModels[config.InterpolationModel])
+		fmt.Printf("• Frame rate boost: %dfps → %dfps (%dx smoother)\n", 
+			originalFPS, config.TargetFPS, multiplier)
+		fmt.Printf("• Quality: %s\n", config.InterpolationQuality)
+		
+		// Show interpolation acceleration info
+		interpolationConfig := interpolation.GetDefaultConfig()
+		gpuInfo := upscaling.GetGPUInfo(interpolationConfig.PythonPath)
+		fmt.Printf("• GPU Acceleration: %s\n", gpuInfo)
 	}
 
 	// Display quality profile

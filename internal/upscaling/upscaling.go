@@ -2,6 +2,7 @@
 package upscaling
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
@@ -15,27 +16,36 @@ import (
 
 // UpscalingConfig holds configuration for AI scaling (both upscaling and downscaling)
 type UpscalingConfig struct {
-	Enabled      bool
-	Model        string // RealESRGAN_x4plus, RealESRGAN_x2plus, RealESRGAN_x4plus_anime_6B
-	Scale        int    // Positive for upscaling (2, 3, 4), negative for downscaling (-2, -4, -8)
-	UseGPU       bool
-	GPUDevice    int
-	PythonPath   string
-	ScriptPath   string
-	TempDir      string
-	IsDownscale  bool   // True if scale is negative
+	Enabled         bool
+	Model           string  // RealESRGAN_x4plus, RealESRGAN_x2plus, RealESRGAN_x4plus_anime_6B
+	Scale           int     // Positive for upscaling (2, 3, 4), negative for downscaling (-2, -4, -8)
+	UseGPU          bool
+	GPUDevice       int
+	PythonPath      string
+	ScriptPath      string
+	TempDir         string
+	IsDownscale     bool    // True if scale is negative
+	MaxBatchSize    int     // Maximum batch size for parallel processing
+	UseParallel     bool    // Enable parallel batch processing
+	AsyncProcessing bool    // Enable async CPU/GPU overlap
+	FP16            bool    // Use half precision for better performance
 }
 
 // VideoUpscalingResult contains the results of video upscaling
 type VideoUpscalingResult struct {
-	InputPath       string
-	OutputPath      string
-	OriginalSize    VideoSize
-	UpscaledSize    VideoSize
-	ProcessingTime  time.Duration
-	FramesProcessed int
-	Success         bool
-	ErrorMessage    string
+	InputPath         string
+	OutputPath        string
+	OriginalSize      VideoSize
+	UpscaledSize      VideoSize
+	ProcessingTime    time.Duration
+	FramesProcessed   int
+	Success           bool
+	ErrorMessage      string
+	EffectiveFPS      float64            // Actual processing FPS achieved
+	BatchSizeUsed     int                // Actual batch size used
+	MemoryUsage       map[string]any     // GPU memory usage stats
+	ParallelProcessing bool              // Whether parallel processing was used
+	GPUUtilization    float64            // Estimated GPU utilization percentage
 }
 
 // VideoSize represents video dimensions
@@ -325,32 +335,18 @@ func (u *Upscaler) UpscaleVideo(inputPath, outputPath string, startTime, endTime
 		return result, fmt.Errorf(result.ErrorMessage)
 	}
 
-	// Process frames in batches to manage memory
-	batchSize := 10                                  // Process 10 frames at a time
-	progressStep := 60.0 / float64(actualFrameCount) // 60% of progress for upscaling
-
-	for i, frameFile := range frameFiles {
-		frameName := filepath.Base(frameFile)
-		upscaledPath := filepath.Join(upscaledDir, frameName)
-
-		if err := u.UpscaleFrame(frameFile, upscaledPath); err != nil {
-			result.ErrorMessage = fmt.Sprintf("failed to upscale frame %s: %v", frameName, err)
+	// Use parallel batch processing for maximum GPU utilization
+	if u.config.UseParallel {
+		// Parallel batch processing mode
+		if err := u.upscaleFramesParallel(framesDir, upscaledDir, progressCallback); err != nil {
+			result.ErrorMessage = fmt.Sprintf("failed to upscale frames in parallel: %v", err)
 			return result, fmt.Errorf(result.ErrorMessage)
 		}
-
-		// Update progress
-		if progressCallback != nil {
-			currentProgress := 20 + int(float64(i+1)*progressStep)
-			scaledVerb := "Upscaled"
-			if u.config.Scale < 0 {
-				scaledVerb = "Downscaled"
-			}
-			progressCallback(currentProgress, 100, fmt.Sprintf("%s frame %d/%d", scaledVerb, i+1, actualFrameCount))
-		}
-
-		// Memory management: force garbage collection every batch
-		if (i+1)%batchSize == 0 {
-			runtime.GC()
+	} else {
+		// Legacy sequential processing (for compatibility)
+		if err := u.upscaleFramesSequential(frameFiles, upscaledDir, progressCallback); err != nil {
+			result.ErrorMessage = fmt.Sprintf("failed to upscale frames sequentially: %v", err)
+			return result, fmt.Errorf(result.ErrorMessage)
 		}
 	}
 
@@ -680,6 +676,321 @@ print(" | ".join(info))
 	return strings.TrimSpace(string(output))
 }
 
+// GPUInfo represents detailed GPU information for both upscaling and frame interpolation
+type GPUInfo struct {
+	Platform                string  `json:"platform"`
+	GPUName                 string  `json:"gpu_name"`
+	TotalMemoryGB          float64 `json:"total_memory_gb"`
+	AvailableMemoryGB      float64 `json:"available_memory_gb"`
+	DeviceType             string  `json:"device_type"` // "CUDA", "MPS", "CPU"
+	DeviceIndex            int     `json:"device_index"`
+	SupportsUpscaling      bool    `json:"supports_upscaling"`
+	SupportsInterpolation  bool    `json:"supports_interpolation"`
+	MaxUpscalingResolution string  `json:"max_upscaling_resolution"`
+	MaxInterpolationFPS    int     `json:"max_interpolation_fps"`
+}
+
+// GetDetailedGPUInfo returns comprehensive GPU information for AI processing
+func GetDetailedGPUInfo(pythonPath string) (*GPUInfo, error) {
+	cmd := exec.Command(pythonPath, "-c", `
+import torch
+import subprocess
+import platform
+import json
+
+info = {
+    "platform": platform.system(),
+    "gpu_name": "Unknown",
+    "total_memory_gb": 0.0,
+    "available_memory_gb": 0.0,
+    "device_type": "CPU",
+    "device_index": 0,
+    "supports_upscaling": False,
+    "supports_interpolation": False,
+    "max_upscaling_resolution": "1080p",
+    "max_interpolation_fps": 30
+}
+
+if torch.backends.mps.is_available():
+    info["device_type"] = "MPS"
+    info["supports_upscaling"] = True
+    info["supports_interpolation"] = True
+    info["max_upscaling_resolution"] = "4K"
+    info["max_interpolation_fps"] = 60
+    
+    try:
+        result = subprocess.run(['system_profiler', 'SPHardwareDataType'], 
+                              capture_output=True, text=True, timeout=5)
+        if 'Chip:' in result.stdout:
+            chip_line = [line for line in result.stdout.split('\n') if 'Chip:' in line][0]
+            chip_name = chip_line.split('Chip:')[1].strip()
+            info["gpu_name"] = chip_name
+        else:
+            info["gpu_name"] = "Apple Silicon"
+        
+        # Apple Silicon memory estimation
+        if "M1" in info["gpu_name"] or "M2" in info["gpu_name"]:
+            info["total_memory_gb"] = 16.0  # Unified memory
+            info["available_memory_gb"] = 12.0
+        elif "M3" in info["gpu_name"] or "M4" in info["gpu_name"]:
+            info["total_memory_gb"] = 24.0
+            info["available_memory_gb"] = 18.0
+    except:
+        info["gpu_name"] = "Apple Silicon"
+        info["total_memory_gb"] = 16.0
+        info["available_memory_gb"] = 12.0
+
+elif torch.cuda.is_available():
+    info["device_type"] = "CUDA"
+    info["supports_upscaling"] = True
+    info["supports_interpolation"] = True
+    
+    gpu_name = torch.cuda.get_device_name(0)
+    info["gpu_name"] = gpu_name
+    
+    gpu_memory = torch.cuda.get_device_properties(0).total_memory / 1024**3
+    info["total_memory_gb"] = round(gpu_memory, 1)
+    
+    # Estimate available memory (80% of total)
+    info["available_memory_gb"] = round(gpu_memory * 0.8, 1)
+    
+    # Set capabilities based on memory
+    if gpu_memory >= 12:
+        info["max_upscaling_resolution"] = "4K"
+        info["max_interpolation_fps"] = 120
+    elif gpu_memory >= 8:
+        info["max_upscaling_resolution"] = "1440p"
+        info["max_interpolation_fps"] = 60
+    elif gpu_memory >= 6:
+        info["max_upscaling_resolution"] = "1080p"
+        info["max_interpolation_fps"] = 30
+    else:
+        info["max_upscaling_resolution"] = "720p"
+        info["max_interpolation_fps"] = 30
+        info["supports_interpolation"] = gpu_memory >= 4
+
+else:
+    info["device_type"] = "CPU"
+    info["gpu_name"] = "CPU Only"
+    info["supports_upscaling"] = True  # CPU can still do upscaling, just slower
+    info["supports_interpolation"] = False  # Frame interpolation too slow on CPU
+    info["max_upscaling_resolution"] = "720p"
+    info["max_interpolation_fps"] = 0
+
+print(json.dumps(info))
+`)
+
+	output, err := cmd.Output()
+	if err != nil {
+		return nil, fmt.Errorf("failed to get GPU info: %v", err)
+	}
+
+	var gpuInfo GPUInfo
+	if err := json.Unmarshal(output, &gpuInfo); err != nil {
+		return nil, fmt.Errorf("failed to parse GPU info: %v", err)
+	}
+
+	return &gpuInfo, nil
+}
+
+// EstimateInterpolationMemory estimates memory requirements for frame interpolation
+func EstimateInterpolationMemory(width, height, targetFPS, originalFPS int) (*MemoryEstimate, error) {
+	const (
+		dtypeSize      = 4   // float32 size in bytes
+		modelMemoryGB  = 1.5 // RIFE model memory in GB (smaller than upscaling models)
+		overheadFactor = 2.0 // Higher overhead for frame interpolation due to optical flow
+		safetyMargin   = 0.7 // Use max 70% of available memory for interpolation
+	)
+
+	// Calculate frame interpolation ratio
+	frameRatio := float64(targetFPS) / float64(originalFPS)
+	
+	// Memory for processing frames (input + interpolated frames)
+	frameMemory := float64(width * height * 3 * dtypeSize)
+	batchMemory := frameMemory * frameRatio * 2 // Input + output frames
+	
+	// RIFE processes frames in pairs, so we need memory for optical flow estimation
+	opticalFlowMemory := float64(width * height * 2 * dtypeSize) // 2 channels for flow
+	
+	// Total memory estimation
+	totalMemory := (batchMemory + opticalFlowMemory + modelMemoryGB*1024*1024*1024) * overheadFactor
+	estimatedGB := totalMemory / (1024 * 1024 * 1024)
+
+	// Get available system memory
+	var m runtime.MemStats
+	runtime.ReadMemStats(&m)
+
+	availableGB := float64(m.Sys) / (1024 * 1024 * 1024)
+	if availableGB < 1 {
+		availableGB = 8.0 // Fallback estimation
+	}
+
+	estimate := &MemoryEstimate{
+		EstimatedGB:     estimatedGB,
+		AvailableGB:     availableGB,
+		RecommendedSafe: estimatedGB <= availableGB*safetyMargin,
+	}
+
+	return estimate, nil
+}
+
+// CanHandleInterpolation checks if the GPU can handle frame interpolation for given parameters
+func CanHandleInterpolation(pythonPath string, width, height, targetFPS, originalFPS int) (bool, string, error) {
+	gpuInfo, err := GetDetailedGPUInfo(pythonPath)
+	if err != nil {
+		return false, "Failed to detect GPU capabilities", err
+	}
+
+	if !gpuInfo.SupportsInterpolation {
+		return false, fmt.Sprintf("%s does not support frame interpolation", gpuInfo.GPUName), nil
+	}
+
+	// Check memory requirements
+	memEstimate, err := EstimateInterpolationMemory(width, height, targetFPS, originalFPS)
+	if err != nil {
+		return false, "Failed to estimate memory requirements", err
+	}
+
+	if !memEstimate.RecommendedSafe {
+		return false, fmt.Sprintf("Insufficient GPU memory: needs %.1fGB, available %.1fGB", 
+			memEstimate.EstimatedGB, memEstimate.AvailableGB), nil
+	}
+
+	// Check FPS capabilities
+	if targetFPS > gpuInfo.MaxInterpolationFPS {
+		return false, fmt.Sprintf("Target FPS (%d) exceeds GPU capability (%d fps max)", 
+			targetFPS, gpuInfo.MaxInterpolationFPS), nil
+	}
+
+	// Check resolution capabilities
+	resolutionPixels := width * height
+	var maxPixels int
+	switch gpuInfo.MaxUpscalingResolution {
+	case "4K":
+		maxPixels = 3840 * 2160
+	case "1440p":
+		maxPixels = 2560 * 1440
+	case "1080p":
+		maxPixels = 1920 * 1080
+	case "720p":
+		maxPixels = 1280 * 720
+	default:
+		maxPixels = 1280 * 720
+	}
+
+	if resolutionPixels > maxPixels {
+		return false, fmt.Sprintf("Resolution (%dx%d) exceeds GPU capability (%s max)", 
+			width, height, gpuInfo.MaxUpscalingResolution), nil
+	}
+
+	return true, fmt.Sprintf("Compatible with %s (%s)", gpuInfo.GPUName, gpuInfo.DeviceType), nil
+}
+
+// upscaleFramesParallel performs parallel batch processing for maximum GPU utilization
+func (u *Upscaler) upscaleFramesParallel(inputDir, outputDir string, progressCallback ProgressCallback) error {
+	// Use the parallel Real-ESRGAN script
+	parallelScriptPath := strings.Replace(u.config.ScriptPath, "real_esrgan_working.py", "real_esrgan_parallel.py", 1)
+	
+	// Build optimized command arguments for maximum GPU utilization
+	args := []string{
+		parallelScriptPath,
+		"--input-dir", inputDir,
+		"--output-dir", outputDir,
+		"--model", UpscalingModels[u.config.Model], // Use Real-ESRGAN model name
+		"--scale", strconv.Itoa(u.config.Scale),
+	}
+
+	// Add GPU/CPU configuration
+	if !u.config.UseGPU {
+		args = append(args, "--cpu")
+	} else if u.config.GPUDevice > 0 {
+		args = append(args, "--gpu", strconv.Itoa(u.config.GPUDevice))
+	}
+
+	// Add aggressive batch size for maximum GPU utilization
+	maxBatchSize := u.config.MaxBatchSize
+	if maxBatchSize <= 0 {
+		maxBatchSize = 32 // Default aggressive batch size for upscaling
+	}
+	args = append(args, "--max-batch-size", strconv.Itoa(maxBatchSize))
+
+	// Add precision settings for better performance
+	if u.config.FP16 {
+		args = append(args, "--fp16")
+	}
+
+	// Set up progress monitoring file
+	progressFile := filepath.Join(u.config.TempDir, "upscaling_progress.json")
+	args = append(args, "--progress-file", progressFile)
+
+	// Set up output JSON for detailed results
+	resultsFile := filepath.Join(u.config.TempDir, "upscaling_results.json")
+	args = append(args, "--output-json", resultsFile)
+
+	// Execute parallel Real-ESRGAN upscaling
+	cmd := exec.Command(u.config.PythonPath, args...)
+	
+	// Set up real-time progress monitoring
+	if progressCallback != nil {
+		go u.monitorProgressFromFile(progressFile, progressCallback)
+	}
+
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("parallel Real-ESRGAN upscaling failed: %v\nOutput: %s", err, string(output))
+	}
+
+	return nil
+}
+
+// upscaleFramesSequential performs sequential frame processing (legacy compatibility)
+func (u *Upscaler) upscaleFramesSequential(frameFiles []string, outputDir string, progressCallback ProgressCallback) error {
+	totalFrames := len(frameFiles)
+	
+	for i, frameFile := range frameFiles {
+		// Extract frame number from filename for consistent output naming
+		baseName := filepath.Base(frameFile)
+		outputPath := filepath.Join(outputDir, baseName)
+		
+		// Upscale individual frame
+		if err := u.UpscaleFrame(frameFile, outputPath); err != nil {
+			return fmt.Errorf("failed to upscale frame %s: %v", frameFile, err)
+		}
+		
+		// Update progress
+		if progressCallback != nil {
+			progress := int(float64(i+1) / float64(totalFrames) * 60) + 20 // 20-80% range
+			progressCallback(progress, 100, fmt.Sprintf("Upscaled frame %d/%d", i+1, totalFrames))
+		}
+	}
+	
+	return nil
+}
+
+// monitorProgressFromFile monitors upscaling progress from JSON file updates
+func (u *Upscaler) monitorProgressFromFile(progressFile string, progressCallback ProgressCallback) {
+	for {
+		if _, err := os.Stat(progressFile); err == nil {
+			data, err := os.ReadFile(progressFile)
+			if err == nil {
+				var progress struct {
+					Progress int    `json:"progress"`
+					Message  string `json:"message"`
+				}
+				if json.Unmarshal(data, &progress) == nil {
+					// Map progress to the 20-80% range for upscaling step
+					mappedProgress := 20 + int(float64(progress.Progress)*0.6)
+					progressCallback(mappedProgress, 100, progress.Message)
+					if progress.Progress >= 100 {
+						break
+					}
+				}
+			}
+		}
+		time.Sleep(500 * time.Millisecond) // Check every 500ms for responsive updates
+	}
+}
+
 // GetDefaultConfig returns default upscaling configuration
 func GetDefaultConfig() *UpscalingConfig {
 	// Check for virtual environment first
@@ -700,13 +1011,17 @@ func GetDefaultConfig() *UpscalingConfig {
 	}
 
 	return &UpscalingConfig{
-		Enabled:    false,
-		Model:      "general_4x",
-		Scale:      4,
-		UseGPU:     true,  // Enable GPU by default
-		GPUDevice:  0,
-		PythonPath: pythonPath,
-		ScriptPath: "scripts/real_esrgan_working.py",  // Use working Real-ESRGAN implementation
-		TempDir:    os.TempDir(),
+		Enabled:         false,
+		Model:           "general_4x",
+		Scale:           4,
+		UseGPU:          true,  // Enable GPU by default
+		GPUDevice:       0,
+		PythonPath:      pythonPath,
+		ScriptPath:      "scripts/real_esrgan_parallel.py", // Use parallel script by default
+		TempDir:         os.TempDir(),
+		MaxBatchSize:    32,    // Aggressive batch size for maximum GPU utilization
+		UseParallel:     true,  // Enable parallel processing by default
+		AsyncProcessing: true,  // Enable async CPU/GPU overlap
+		FP16:            true,  // Use half precision for better performance
 	}
 }
